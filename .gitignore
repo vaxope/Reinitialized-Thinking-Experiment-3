@@ -1,6 +1,41 @@
+# GPQA is test-only: never commit its text, prepared data or any run output (CLAUDE.md Rule 5)
 data/
 runs/
+*.jsonl
+*.csv
+*.parquet
+*.arrow
+
+# Local-only project instructions and infrastructure notes
+CLAUDE.md
+INFRASTRUCTURE.md
+.claude/
+
+# Python environment and caches
+.venv/
+venv/
 __pycache__/
 *.pyc
+
+# Credentials and secrets
+.env
+.env.*
+*.pem
+*.key
+.netrc
+.huggingface/
+hf_token*
+*token*.txt
+*secret*
+
+# Model / training artifacts
 *.pt
+*.safetensors
+*.bin
 *.straw.json
+
+# OS / editor clutter
+.DS_Store
+.obsidian/
+.vscode/
+.idea/

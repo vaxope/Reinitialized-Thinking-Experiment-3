@@ -1,0 +1,98 @@
+# configs/control.toml: every parameter of the control (baseline) run.
+#
+# Purpose : single source of truth for the control run of untrained Qwen3.5-2B on
+#           GPQA Diamond in two modes (think, default). No other file hard-codes
+#           these values; they read them via src/config.py.
+# Inputs  : none (hand-edited).
+# Read by : src/data.py (data section), src/prompts.py (prompt section),
+#           src/score.py (scoring section), and later src/generate.py (model,
+#           sampling, generation sections; not yet written).
+# Format  : TOML, parsed by Python's built-in `tomllib`, so no extra package is needed.
+#           CLAUDE.md names this file control.yaml; TOML was chosen because YAML
+#           needs PyYAML (not installed) while TOML also supports comments.
+#
+# Rule (CLAUDE.md, Rule 3): once a run has started, changing anything in [prompt],
+# [sampling], [generation] or [scoring] breaks comparability -> new run name.
+#
+# Each value: meaning | value source | reason.
+
+[model]
+# Hugging Face model id | CLAUDE.md control-run spec.
+name = "Qwen/Qwen3.5-2B"
+# Exact commit of the model repo, so weights + chat template cannot change under us.
+# Source: https://huggingface.co/api/models/Qwen/Qwen3.5-2B "sha", read 2026-11-13
+# (lastModified 2026-03-02). Re-check before the first DeltaAI run.
+revision = "15852e8c16360a2fea060d615a32b45270f8a8fc"
+# Weight precision | CLAUDE.md ("bf16") | the model's native dtype; ~5 GB on GPU.
+dtype = "bfloat16"
+
+[data]
+# Gated HF dataset repo holding GPQA | GPQA authors' official release.
+hf_repo = "Idavidrein/gpqa"
+# File inside the repo: the 198-question Diamond subset.
+hf_file = "gpqa_diamond.csv"
+# Dataset commit. Source: local HF cache (refs/main) on 2026-11-13. Pinning means a
+# re-download gets byte-identical data.
+hf_revision = "633f5ee89ab8ad4522a9f850766b73f62147ffdd"
+# SHA-256 of that CSV file, computed locally 2026-11-13. src/data.py refuses any file
+# whose hash differs, so a silently changed dataset cannot slip in.
+csv_sha256 = "41d1213cd7a4998605a26c2798500652572007161b3a92817ba46b35befcd305"
+# Expected number of questions | GPQA paper (Diamond = 198) | sanity check.
+n_questions = 198
+# Where the cleaned question file is written (gitignored: GPQA must never be committed).
+output_path = "data/gpqa_diamond.jsonl"
+# Strip leading/trailing whitespace from question and option text. 26 questions and
+# ~17 options per column carry stray spaces/newlines in the CSV (counted 2026-11-13).
+# Stripping removes formatting noise without changing content; internal text untouched.
+strip_whitespace = true
+
+[prompt]
+# The two modes of the control run | CLAUDE.md. Order = display order everywhere.
+modes = ["think", "default"]
+# Options per question | GPQA format (1 correct + 3 incorrect).
+n_options = 4
+# Salt mixed into the option-shuffle seed: seed string = "<salt>|<qid>|<sample_idx>".
+# Changing it re-shuffles every question (=> a new run). Value is an arbitrary label
+# chosen once; its only job is to be fixed and recorded.
+shuffle_salt = "gpqa-control-v1"
+
+[sampling]
+# STATUS: CONFIRMED by the user 2026-11-13. Only used later by src/generate.py.
+# ONE setting for BOTH modes, so the only difference between think and default is the
+# assistant prefix. Values = Qwen3.5-2B model card, "thinking mode, text tasks":
+#   temperature=1.0, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=1.5, repetition_penalty=1.0
+# The card recommends different values for non-thinking text tasks (top_p=1.0,
+# presence_penalty=2.0); deliberately NOT used, so default mode runs slightly off its
+# recommended setting. The card also warns the 2B model is prone to thinking loops with
+# these values: watch the think-mode truncation rate in the pilot.
+status = "confirmed"
+temperature = 1.0         # no rescaling of the model's distribution
+top_p = 0.95              # sample only from the smallest token set holding 95% probability
+top_k = 20                # ...and never from outside the 20 most likely tokens
+min_p = 0.0               # off
+presence_penalty = 1.5    # penalise tokens already used (fights repetition loops)
+repetition_penalty = 1.0  # off (1.0 = no change)
+
+[generation]
+# STATUS: PROPOSED. Only used later by src/generate.py.
+status = "proposed"
+# Max new tokens, same for both modes | model card: "32,768 tokens for most queries"
+# (it suggests 81,920 for very hard math/code) | CLAUDE.md proposal. Truncation rate is reported.
+max_new_tokens = 32768
+# Samples per (question, mode) | CLAUDE.md proposal; final value decided after the pilot.
+samples_per_question = 4
+# Pilot size | CLAUDE.md milestone 5: 20 questions x 2 modes x 1 sample.
+pilot_n_questions = 20
+pilot_samples_per_question = 1
+
+[scoring]
+# Name/version of the extraction rule in src/extract.py; written into every scored
+# record so a later rule change is visible in the data.
+extraction_rule = "last_answer_field_v1"
+# If true, a generation that hit max_new_tokens (finish_reason "length") is scored
+# wrong even if an "answer": "X" field happens to appear before the cut. Reason: a
+# truncated output did not finish; counting lucky partial answers would hide the
+# truncation cost. The extractor's letter is still saved, so this can be re-examined.
+truncated_counts_as_wrong = true
+# Confidence level for accuracy intervals | conventional 95%.
+ci_level = 0.95

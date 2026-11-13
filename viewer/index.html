@@ -1,0 +1,512 @@
+<!doctype html>
+<!--
+  viewer/index.html: trajectory dashboard for the control run.
+
+  Purpose : browse every generation of a run, offline. Summary tiles per mode, filters
+            (mode, outcome, finish reason, extraction rule, sample), search by question id,
+            and the FULL trajectory of any record: exact input, hidden reasoning, visible
+            answer with answer fields highlighted, token ids, logprobs, raw JSON, plus the
+            other mode on the same question and sample side by side.
+  Inputs  : one or more JSONL files chosen with the file picker or dropped on the page:
+              runs/<run>/scored.jsonl      (from src/score.py; has outcome/correct)  <- preferred
+              runs/<run>/generations.jsonl (raw; shown as "unscored")
+            Nothing is uploaded anywhere: the file is read by this page in your browser.
+  Output  : none (read-only).
+  Pipeline: generate (DeltaAI, later) -> src/score.py -> scored.jsonl -> [viewer]
+  Rule 5  : GPQA text appears only because you load a local run file. Never publish this
+            page with data embedded, and never commit run files.
+
+  Answer highlighting uses the same strict pattern as src/extract.py ("answer": "X").
+  The reasoning/answer split mirrors src/extract.py: in think mode the text before the
+  FIRST "</think>" is reasoning; in default mode everything is visible. Correctness is
+  never computed here; it comes only from score.py.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trajectory Viewer</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f6f4; --surface: #fcfcfb; --surface-2: #f0efec; --border: #dddcd7;
+  --text: #0b0b0b; --text-2: #52514e; --muted: #7a7974;
+  --think: #2a78d6; --default: #eb6834;            /* categorical slots 1, 2 */
+  --good: #0ca30c; --critical: #d03b3b; --warning: #b98100; --serious: #c4612f; --neutral: #7a7974; --error: #3d3c39;
+  --hl: #fff2c2; --hl-final: #ffe08a; --accent: #2a78d6;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1a1a19; --surface-2: #232321; --border: #34342f;
+    --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
+    --think: #3987e5; --default: #d95926;
+    --good: #0ca30c; --critical: #e06666; --warning: #fab219; --serious: #ec835a; --neutral: #8f8e86; --error: #b9b8b0;
+    --hl: #4a3d10; --hl-final: #6b5512; --accent: #3987e5;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211; --surface: #1a1a19; --surface-2: #232321; --border: #34342f;
+  --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
+  --think: #3987e5; --default: #d95926;
+  --good: #0ca30c; --critical: #e06666; --warning: #fab219; --serious: #ec835a; --neutral: #8f8e86; --error: #b9b8b0;
+  --hl: #4a3d10; --hl-final: #6b5512; --accent: #3987e5;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+h1 { font-size: 16px; margin: 0; }
+h2 { font-size: 13px; margin: 0 0 8px; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+main { padding: 16px; max-width: 1800px; margin: 0 auto; }
+button, select, input { font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 9px; }
+button { cursor: pointer; } button:hover { border-color: var(--accent); }
+.muted { color: var(--muted); } .mono { font-family: var(--mono); }
+#drop { border: 2px dashed var(--border); border-radius: 10px; padding: 40px 16px; text-align: center; color: var(--text-2); }
+#drop.over { border-color: var(--accent); }
+.card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+#problems { margin-bottom: 12px; } #problems:empty { display: none; }
+.warn-box { border-left: 4px solid var(--warning); background: var(--surface); padding: 8px 12px; border-radius: 6px; }
+
+/* tiles */
+#tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 12px; margin-bottom: 12px; }
+.mode-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-weight: 600; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 14px; }
+@media (max-width: 520px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.stat .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat .l { font-size: 12px; color: var(--text-2); }
+.stat .s { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.outbar { display: flex; height: 10px; border-radius: 4px; overflow: hidden; gap: 2px; margin: 10px 0 4px; background: var(--surface); }
+.outbar span { display: block; height: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--text-2); }
+
+/* filters */
+#filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+#filters label { display: flex; gap: 4px; align-items: center; font-size: 13px; color: var(--text-2); }
+#q { min-width: min(220px, 100%); flex: 1 1 220px; }
+select { max-width: 100%; }
+#filters label { min-width: 0; max-width: 100%; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; font-size: 12px; cursor: pointer; user-select: none; background: var(--surface); }
+.chip[aria-pressed="false"] { opacity: .45; }
+
+/* layout */
+#split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+@media (min-width: 1150px) { #split { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); } }
+#split.wide { grid-template-columns: minmax(0, 1fr); }
+#split.wide #listcard { display: none; }
+
+/* table */
+.tablewrap { overflow: auto; max-height: 70vh; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { position: sticky; top: 0; background: var(--surface); font-weight: 600; color: var(--text-2); cursor: pointer; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr { cursor: pointer; } tbody tr:hover { background: var(--surface-2); }
+tbody tr.sel { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
+.pager { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 8px; font-size: 13px; }
+.badge { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; font-weight: 600; }
+.badge i { font-style: normal; display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: #fff; font-size: 11px; }
+.modetag { display: inline-flex; align-items: center; gap: 5px; }
+
+/* detail */
+#detail .empty { color: var(--muted); padding: 30px; text-align: center; }
+.dhead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 14px; font-size: 13px; margin-bottom: 10px; }
+.meta div span { display: block; font-size: 11px; color: var(--muted); }
+.meta div b { font-weight: 600; word-break: break-all; }
+details { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; background: var(--surface); }
+summary { cursor: pointer; padding: 7px 10px; font-weight: 600; font-size: 13px; }
+summary .muted { font-weight: 400; }
+pre.text { margin: 0; padding: 10px; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.5 var(--mono);
+  max-height: 60vh; overflow: auto; border-top: 1px solid var(--border); background: var(--surface-2); }
+#split.wide pre.text { max-height: none; }
+mark.ans { background: var(--hl); color: inherit; border-radius: 3px; }
+mark.ans.final { background: var(--hl-final); outline: 1px solid var(--warning); }
+.err { color: var(--critical); font-weight: 600; }
+.compare { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+@media (min-width: 900px) { .compare.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.colhead { display: flex; gap: 8px; align-items: center; font-weight: 600; margin: 4px 0; flex-wrap: wrap; }
+.samples { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 10px; }
+.samples button { font-size: 12px; padding: 2px 8px; }
+.samples button.cur { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.lp { font: 12px var(--mono); }
+.lp td { padding: 1px 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Trajectory viewer <span class="muted" id="loaded" style="font-weight:400"></span></h1>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <label class="muted" style="font-size:13px"><input type="file" id="file" accept=".jsonl,.json,.txt" multiple style="max-width:240px"></label>
+    <button id="theme" title="Toggle light/dark">◐ Theme</button>
+  </div>
+</header>
+<main>
+  <div id="drop">Drop <span class="mono">scored.jsonl</span> (or <span class="mono">generations.jsonl</span>) here, or use the file picker above.<br>
+    <span class="muted">Files are read locally in this browser. Nothing is uploaded.</span></div>
+  <div id="app" hidden>
+    <div id="problems"></div>
+    <div id="tiles"></div>
+    <div id="filters" class="card">
+      <input id="q" type="search" placeholder="Search question id (e.g. rec06pn)…" aria-label="Search question id">
+      <label>Mode <select id="f-mode"></select></label>
+      <label>Sample <select id="f-sample"></select></label>
+      <label>Finish <select id="f-finish"></select></label>
+      <label>Rule <select id="f-rule"></select></label>
+      <span class="chips" id="f-outcome" aria-label="Outcome filter"></span>
+      <button id="reset">Reset</button>
+      <span class="muted" id="count"></span>
+    </div>
+    <div id="split">
+      <div class="card" id="listcard">
+        <div class="tablewrap"><table>
+          <thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody>
+        </table></div>
+        <div class="pager"><button id="prev">← Prev</button><span id="pageinfo" class="muted"></span><button id="next">Next →</button></div>
+      </div>
+      <div class="card" id="detail"><div class="empty">Select a row to see its full trajectory.<br><span class="muted">Keys: j / k move, f full width, c compare modes.</span></div></div>
+    </div>
+  </div>
+</main>
+<script>
+"use strict";
+// ---------------------------------------------------------------- constants
+const MODE_ORDER = ["think", "default"];               // display order (configs/control.toml)
+const OUTCOMES = {                                        // from src/score.py OUTCOMES
+  correct:   { label: "Correct",   icon: "✓", color: "var(--good)" },
+  wrong:     { label: "Wrong",     icon: "✗", color: "var(--critical)" },
+  no_answer: { label: "No answer", icon: "?", color: "var(--warning)" },
+  truncated: { label: "Truncated", icon: "✂", color: "var(--serious)" },
+  error:     { label: "Error",     icon: "!", color: "var(--error)" },   // distinct from Wrong
+  unscored:  { label: "Unscored",  icon: "·", color: "var(--neutral)" },
+};
+const PAGE = 100;                                         // table rows per page (keeps the DOM small)
+// Same pattern as src/extract.py ANSWER_FIELD (used only for highlighting, never for scoring).
+const ANSWER_FIELD = /"answer"\s*:\s*"([A-Z])"/g;
+const THINK_CLOSE = "</think>";
+
+// ---------------------------------------------------------------- state
+let RECORDS = [], FILES = [], PROBLEMS = [];
+let view = [], page = 0, selected = null, sortKey = "qid", sortDir = 1, compareOn = true;
+const $ = (id) => document.getElementById(id);
+
+// Build DOM safely: text is always set via textContent, never innerHTML, so model output
+// containing "<script>" or HTML is shown literally and cannot run.
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v;
+    else if (k === "style") n.style.cssText = v; else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  }
+  for (const c of kids.flat()) if (c != null) n.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return n;
+}
+const fmt = (x, d = 0) => (x == null || Number.isNaN(x)) ? "–" : Number(x).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const pct = (x) => (x == null || Number.isNaN(x)) ? "–" : (100 * x).toFixed(1) + "%";
+const outcomeOf = (r) => r.outcome || "unscored";
+const modeColor = (m) => m === "think" ? "var(--think)" : m === "default" ? "var(--default)" : "var(--neutral)";
+const keyOf = (r) => `${r._file}|${r.run_id}|${r.qid}|${r.mode}|${r.sample_idx}`;
+
+// ---------------------------------------------------------------- theme
+try { const t = localStorage.getItem("tv-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+$("theme").onclick = () => {
+  const dark = getComputedStyle(document.documentElement).colorScheme.includes("dark");
+  document.documentElement.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("tv-theme", document.documentElement.dataset.theme); } catch (e) {}
+};
+
+// ---------------------------------------------------------------- loading
+async function loadFiles(fileList) {
+  for (const f of fileList) {
+    const text = await f.text();
+    let n = 0;
+    text.split("\n").forEach((line, i) => {
+      if (!line.trim()) return;
+      try { const r = JSON.parse(line); r._file = f.name; r._line = i + 1; RECORDS.push(r); n++; }
+      catch (e) { PROBLEMS.push(`${f.name} line ${i + 1}: not valid JSON (${e.message})`); }  // reported, not dropped silently
+    });
+    FILES.push(`${f.name} (${n})`);
+  }
+  const unscored = RECORDS.filter(r => !r.outcome).length;
+  if (unscored) PROBLEMS.push(`${unscored} records are unscored (raw generations). Run "python3 -m src.score <file>" and load scored.jsonl to see correctness.`);
+  $("drop").hidden = true; $("app").hidden = false;
+  $("loaded").textContent = "· " + FILES.join(", ");
+  buildFilters(); renderProblems(); renderTiles(); applyFilters();
+}
+$("file").addEventListener("change", (e) => loadFiles(e.target.files));
+for (const ev of ["dragover", "dragenter"]) document.addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("over"); });
+document.addEventListener("dragleave", () => $("drop").classList.remove("over"));
+document.addEventListener("drop", (e) => { e.preventDefault(); $("drop").classList.remove("over"); loadFiles(e.dataTransfer.files); });
+
+function renderProblems() {
+  $("problems").replaceChildren(...(PROBLEMS.length ? [el("div", { class: "warn-box" },
+    el("b", { text: `⚠ ${PROBLEMS.length} notice(s)` }), el("ul", {}, PROBLEMS.slice(0, 20).map(p => el("li", { text: p }))))] : []));
+}
+
+// ---------------------------------------------------------------- summary tiles (all loaded records, not the filter)
+function stats(rs) {
+  const nums = (k) => rs.map(r => r[k]).filter(v => typeof v === "number").sort((a, b) => a - b);
+  const mean = (a) => a.length ? a.reduce((s, x) => s + x, 0) / a.length : NaN;
+  const med = (a) => a.length ? (a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2) : NaN;
+  const oc = {}; rs.forEach(r => { const o = outcomeOf(r); oc[o] = (oc[o] || 0) + 1; });
+  const out = nums("n_output_tokens"), th = nums("n_think_tokens"), wt = nums("wall_time_s");
+  return { n: rs.length, oc, qs: new Set(rs.map(r => r.qid)).size,
+    scored: rs.filter(r => r.outcome).length, correct: rs.filter(r => r.correct === true).length,
+    outMean: mean(out), outMed: med(out), outTotal: out.reduce((s, x) => s + x, 0),
+    thinkMean: mean(th), wtMed: med(wt), wtTotal: wt.reduce((s, x) => s + x, 0) };
+}
+function renderTiles() {
+  const modes = [...new Set(RECORDS.map(r => r.mode))].sort((a, b) => (MODE_ORDER.indexOf(a) + 99 * (MODE_ORDER.indexOf(a) < 0)) - (MODE_ORDER.indexOf(b) + 99 * (MODE_ORDER.indexOf(b) < 0)));
+  $("tiles").replaceChildren(...modes.map(m => {
+    const s = stats(RECORDS.filter(r => r.mode === m));
+    const acc = s.scored ? s.correct / s.n : NaN;   // denominator = all records, as in score.py
+    const stat = (v, l, sub) => el("div", { class: "stat" }, el("div", { class: "v", text: v }), el("div", { class: "l", text: l }), sub ? el("div", { class: "s", text: sub }) : null);
+    const order = ["correct", "wrong", "no_answer", "truncated", "error", "unscored"].filter(o => s.oc[o]);
+    return el("div", { class: "card" },
+      el("div", { class: "mode-head" }, el("span", { class: "swatch", style: `background:${modeColor(m)}` }), m,
+        el("span", { class: "muted", style: "font-weight:400", text: `· ${s.n} records · ${s.qs} questions` })),
+      el("div", { class: "stats" },
+        stat(s.scored ? pct(acc) : "–", "accuracy", s.scored ? `${s.correct} / ${s.n} correct` : "unscored"),
+        stat(fmt(s.outMean), "mean output tokens", `median ${fmt(s.outMed)} · total ${fmt(s.outTotal)}`),
+        stat(fmt(s.thinkMean), "mean think tokens", m === "default" ? "empty think block" : ""),
+        stat(pct((s.oc.truncated || 0) / s.n), "truncated", `${s.oc.truncated || 0} hit the token limit`),
+        stat(String((s.oc.no_answer || 0) + (s.oc.error || 0)), "no answer / error", `${s.oc.no_answer || 0} no answer · ${s.oc.error || 0} errors`),
+        stat(fmt(s.wtMed, 1) + " s", "median wall time", `sum ${fmt(s.wtTotal / 60, 1)} min (not GPU time)`)),
+      el("div", { class: "outbar", role: "img", "aria-label": order.map(o => `${OUTCOMES[o].label} ${s.oc[o]}`).join(", ") },
+        order.map(o => el("span", { title: `${OUTCOMES[o].label}: ${s.oc[o]} (${pct(s.oc[o] / s.n)})`, style: `flex:${s.oc[o]};background:${OUTCOMES[o].color}` }))),
+      el("div", { class: "legend" }, order.map(o => el("span", {}, badge(o), ` ${s.oc[o]}`))));
+  }));
+}
+function badge(o) {
+  const d = OUTCOMES[o] || OUTCOMES.unscored;
+  return el("span", { class: "badge" }, el("i", { style: `background:${d.color}`, text: d.icon }), d.label);
+}
+
+// ---------------------------------------------------------------- filters
+function options(sel, values, allLabel = "All") {
+  sel.replaceChildren(el("option", { value: "", text: allLabel }), ...values.map(v => el("option", { value: String(v), text: String(v) })));
+}
+function buildFilters() {
+  const uniq = (k) => [...new Set(RECORDS.map(r => r[k]))].filter(v => v !== undefined).sort((a, b) => a > b ? 1 : -1);
+  options($("f-mode"), uniq("mode"));
+  options($("f-sample"), uniq("sample_idx"));
+  options($("f-finish"), [...new Set(RECORDS.map(r => String(r.finish_reason)))].sort());
+  options($("f-rule"), uniq("extraction_rule"));
+  const present = Object.keys(OUTCOMES).filter(o => RECORDS.some(r => outcomeOf(r) === o));
+  $("f-outcome").replaceChildren(...present.map(o => {
+    const c = el("span", { class: "chip", role: "button", tabindex: "0", "aria-pressed": "true", "data-o": o }, badge(o));
+    const toggle = () => { c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true"); page = 0; applyFilters(); };
+    c.onclick = toggle; c.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
+    return c;
+  }));
+  for (const id of ["q", "f-mode", "f-sample", "f-finish", "f-rule"]) $(id).addEventListener("input", () => { page = 0; applyFilters(); });
+  $("reset").onclick = () => {
+    $("q").value = ""; for (const id of ["f-mode", "f-sample", "f-finish", "f-rule"]) $(id).value = "";
+    document.querySelectorAll("#f-outcome .chip").forEach(c => c.setAttribute("aria-pressed", "true")); page = 0; applyFilters();
+  };
+  readHash();
+}
+function applyFilters() {
+  const q = $("q").value.trim().toLowerCase();
+  const mode = $("f-mode").value, sample = $("f-sample").value, fin = $("f-finish").value, rule = $("f-rule").value;
+  const on = new Set([...document.querySelectorAll("#f-outcome .chip")].filter(c => c.getAttribute("aria-pressed") === "true").map(c => c.dataset.o));
+  view = RECORDS.filter(r =>
+    (!q || String(r.qid).toLowerCase().includes(q)) && (!mode || r.mode === mode) &&
+    (!sample || String(r.sample_idx) === sample) && (!fin || String(r.finish_reason) === fin) &&
+    (!rule || r.extraction_rule === rule) && on.has(outcomeOf(r)));
+  const val = (r) => { const v = r[sortKey]; return v == null ? -Infinity : v; };
+  view.sort((a, b) => {
+    const x = val(a), y = val(b);
+    if (x < y) return -sortDir; if (x > y) return sortDir;
+    return String(a.qid).localeCompare(b.qid) || (a.sample_idx - b.sample_idx) || (MODE_ORDER.indexOf(a.mode) - MODE_ORDER.indexOf(b.mode));
+  });
+  $("count").textContent = `${view.length} of ${RECORDS.length} records`;
+  writeHash(); renderTable();
+}
+// The search and filters live in the URL hash (#q=...&mode=...), so a view can be bookmarked.
+function writeHash() {
+  const p = new URLSearchParams();
+  if ($("q").value) p.set("q", $("q").value);
+  for (const [k, id] of [["mode", "f-mode"], ["sample", "f-sample"], ["finish", "f-finish"], ["rule", "f-rule"]]) if ($(id).value) p.set(k, $(id).value);
+  history.replaceState(null, "", p.toString() ? "#" + p.toString() : location.pathname);
+}
+function readHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.get("q")) $("q").value = p.get("q");
+  for (const [k, id] of [["mode", "f-mode"], ["sample", "f-sample"], ["finish", "f-finish"], ["rule", "f-rule"]]) if (p.get(k)) $(id).value = p.get(k);
+}
+
+// ---------------------------------------------------------------- table
+const COLS = [
+  ["qid", "Question id"], ["sample_idx", "Sample", "num"], ["mode", "Mode"], ["gold", "Gold"],
+  ["extracted_answer", "Extracted"], ["outcome", "Outcome"], ["extraction_rule", "Rule"], ["finish_reason", "Finish"],
+  ["n_output_tokens", "Out tok", "num"], ["n_think_tokens", "Think tok", "num"], ["wall_time_s", "Time s", "num"],
+];
+function renderTable() {
+  $("thead").replaceChildren(...COLS.map(([k, label, cls]) => el("th", { class: cls || "", scope: "col",
+    text: label + (sortKey === k ? (sortDir > 0 ? " ▲" : " ▼") : ""),
+    onclick: () => { sortDir = sortKey === k ? -sortDir : 1; sortKey = k; applyFilters(); } })));
+  const pages = Math.max(1, Math.ceil(view.length / PAGE));
+  page = Math.min(page, pages - 1);
+  const rows = view.slice(page * PAGE, (page + 1) * PAGE);
+  $("tbody").replaceChildren(...rows.map(r => {
+    const tr = el("tr", { class: selected && keyOf(selected) === keyOf(r) ? "sel" : "", onclick: () => select(r) },
+      el("td", { class: "mono", text: r.qid }), el("td", { class: "num", text: r.sample_idx }),
+      el("td", {}, el("span", { class: "modetag" }, el("span", { class: "swatch", style: `background:${modeColor(r.mode)}` }), r.mode)),
+      el("td", { class: "mono", text: r.gold ?? "–" }), el("td", { class: "mono", text: r.extracted_answer ?? "–" }),
+      el("td", {}, badge(outcomeOf(r))), el("td", { class: "muted", text: r.extraction_rule ?? "–" }),
+      el("td", { text: String(r.finish_reason) }), el("td", { class: "num", text: fmt(r.n_output_tokens) }),
+      el("td", { class: "num", text: fmt(r.n_think_tokens) }), el("td", { class: "num", text: fmt(r.wall_time_s, 1) }));
+    return tr;
+  }));
+  $("pageinfo").textContent = `page ${page + 1} / ${pages}`;
+  $("prev").disabled = page === 0; $("next").disabled = page >= pages - 1;
+}
+$("prev").onclick = () => { page--; renderTable(); };
+$("next").onclick = () => { page++; renderTable(); };
+
+// ---------------------------------------------------------------- detail: the full trajectory
+function splitOutput(r) {      // mirrors src/extract.split_output
+  const t = r.output_text;
+  if (t == null) return { reasoning: null, visible: null, closed: null };
+  if (r.mode === "think") {
+    const i = t.indexOf(THINK_CLOSE);
+    return i < 0 ? { reasoning: t, visible: "", closed: false } : { reasoning: t.slice(0, i), visible: t.slice(i + THINK_CLOSE.length), closed: true };
+  }
+  return { reasoning: "", visible: t, closed: null };
+}
+// Visible text with every "answer": "X" field highlighted; the last one (what extract.py takes) emphasised.
+function highlighted(text) {
+  const pre = el("pre", { class: "text" });
+  const ms = [...text.matchAll(ANSWER_FIELD)];
+  let pos = 0;
+  ms.forEach((m, i) => {
+    const final = i === ms.length - 1;
+    pre.append(text.slice(pos, m.index),
+      el("mark", { class: "ans" + (final ? " final" : ""), title: final ? "final answer field (used by the extractor)" : "earlier answer field", text: m[0] }));
+    pos = m.index + m[0].length;
+  });
+  pre.append(text.slice(pos));
+  return pre;
+}
+function section(title, sub, body, open) {
+  const d = el("details", open ? { open: "" } : {}, el("summary", {}, title, sub ? el("span", { class: "muted", text: "  " + sub }) : null));
+  if (typeof body === "function") {   // lazy: big sections (token ids, logprobs) are built only when opened
+    let built = false;
+    d.addEventListener("toggle", () => { if (d.open && !built) { built = true; d.append(body()); } });
+  } else d.append(body);
+  return d;
+}
+function trajectory(r, compact) {
+  const parts = splitOutput(r);
+  const wrap = el("div");
+  if (r.error) wrap.append(el("p", { class: "err", text: "Error: " + r.error }));
+  if (!compact) wrap.append(section("Input (exact text sent)", `${fmt(r.n_input_tokens)} tokens`, el("pre", { class: "text", text: r.input_text ?? "(missing)" }), false));
+  if (r.mode === "think") {
+    const st = parts.closed === false ? "never closed: reasoning did not finish" : `${fmt(r.n_think_tokens)} tokens`;
+    wrap.append(section("Hidden reasoning (<think> … </think>)", st, el("pre", { class: "text", text: parts.reasoning ?? "(no output)" }), !compact));
+  }
+  const nAns = parts.visible ? [...parts.visible.matchAll(ANSWER_FIELD)].length : 0;
+  wrap.append(section(r.mode === "think" ? "Visible answer (after </think>)" : "Output (all visible)",
+    `${nAns} answer field(s)` + (r.mode !== "think" && r.n_output_tokens != null ? ` · ${fmt(r.n_output_tokens)} tokens` : ""),
+    parts.visible == null ? el("pre", { class: "text", text: "(no output)" }) : parts.visible === "" ? el("pre", { class: "text muted", text: "(empty)" }) : highlighted(parts.visible), true));
+  if (!compact) {
+    wrap.append(section("Output token ids", `${(r.output_token_ids || []).length} ids`, () => el("pre", { class: "text", text: JSON.stringify(r.output_token_ids) }), false));
+    wrap.append(section("Input token ids", `${(r.input_token_ids || []).length} ids`, () => el("pre", { class: "text", text: JSON.stringify(r.input_token_ids) }), false));
+    wrap.append(section("Output logprobs", logprobSummary(r), () => logprobTable(r), false));
+    wrap.append(section("Raw record (JSON, long arrays shortened)", "", () => el("pre", { class: "text", text: rawJSON(r) }), false));
+  }
+  return wrap;
+}
+function logprobSummary(r) {
+  const lp = (r.output_logprobs || []).map(x => Array.isArray(x) ? x[0] : x).filter(x => typeof x === "number");
+  if (!lp.length) return "none";
+  const mean = lp.reduce((s, x) => s + x, 0) / lp.length;
+  return `${lp.length} tokens · mean ${mean.toFixed(3)} · min ${Math.min(...lp).toFixed(2)}`;
+}
+function logprobTable(r) {
+  const LIMIT = 3000;   // rendering 30k rows would freeze the page; the raw JSON has everything
+  const rows = (r.output_logprobs || []).slice(0, LIMIT);
+  const t = el("table", { class: "lp" }, el("thead", {}, el("tr", {}, el("th", { text: "#" }), el("th", { text: "logprob" }), el("th", { text: "token id" }), el("th", { text: "text" }))),
+    el("tbody", {}, rows.map((x, i) => { const [lp, id, tx] = Array.isArray(x) ? x : [x, null, null];
+      return el("tr", {}, el("td", { text: i }), el("td", { text: typeof lp === "number" ? lp.toFixed(4) : String(lp) }), el("td", { text: id ?? "" }), el("td", { text: tx == null ? "" : JSON.stringify(tx) })); })));
+  const box = el("div", { style: "max-height:50vh;overflow:auto;border-top:1px solid var(--border)" }, t);
+  if ((r.output_logprobs || []).length > LIMIT) box.append(el("p", { class: "muted", text: `Showing first ${LIMIT} of ${r.output_logprobs.length}.` }));
+  return box;
+}
+function rawJSON(r) {
+  const short = {};
+  for (const [k, v] of Object.entries(r)) {
+    if (k.startsWith("_")) continue;
+    short[k] = Array.isArray(v) && v.length > 20 ? `[${v.length} items: ${JSON.stringify(v.slice(0, 5)).slice(1, -1)}, …]`
+      : typeof v === "string" && v.length > 400 ? v.slice(0, 400) + `… (${v.length} chars)` : v;
+  }
+  return JSON.stringify(short, null, 2);
+}
+function metaGrid(r) {
+  const item = (l, v) => el("div", {}, el("span", { text: l }), el("b", { text: v == null || v === "" ? "–" : String(v) }));
+  const sp = r.sampling_params ? Object.entries(r.sampling_params).map(([k, v]) => `${k}=${v}`).join(", ") : null;
+  return el("div", { class: "meta" },
+    item("gold / extracted", `${r.gold ?? "–"} / ${r.extracted_answer ?? "–"}`), item("extraction rule", r.extraction_rule),
+    item("finish reason", r.finish_reason), item("output / think tokens", `${fmt(r.n_output_tokens)} / ${fmt(r.n_think_tokens)}`),
+    item("input tokens", fmt(r.n_input_tokens)), item("wall time", r.wall_time_s == null ? null : fmt(r.wall_time_s, 2) + " s"),
+    item("option order", JSON.stringify(r.option_order)), item("seed", r.seed), item("run", r.run_id),
+    item("model", `${r.model ?? "–"} @ ${(r.model_revision || "").slice(0, 10)}`), item("template hash", r.chat_template_hash),
+    item("sglang", r.sglang_version), item("scoring rule", r.scoring_rule_version), item("source", `${r._file}:${r._line}`),
+    item("sampling", sp));
+}
+function select(r) {
+  selected = r;
+  document.querySelectorAll("#tbody tr").forEach((tr, i) => tr.classList.toggle("sel", view[page * PAGE + i] === r));
+  const same = RECORDS.filter(x => x.qid === r.qid && x.run_id === r.run_id && x._file === r._file);
+  const twins = MODE_ORDER.concat([...new Set(same.map(x => x.mode))].filter(m => !MODE_ORDER.includes(m)))
+    .map(m => same.find(x => x.mode === m && x.sample_idx === r.sample_idx)).filter(Boolean);
+  const samples = same.slice().sort((a, b) => a.sample_idx - b.sample_idx || MODE_ORDER.indexOf(a.mode) - MODE_ORDER.indexOf(b.mode));
+  const wide = $("split").classList.contains("wide");
+  const head = el("div", { class: "dhead" },
+    el("div", {}, el("div", { style: "font-weight:600", class: "mono", text: r.qid }),
+      el("div", { class: "colhead" }, el("span", { class: "swatch", style: `background:${modeColor(r.mode)}` }), `${r.mode} · sample ${r.sample_idx}`, badge(outcomeOf(r)))),
+    el("div", { style: "display:flex;gap:6px;flex-wrap:wrap" },
+      el("button", { text: compareOn ? "Single view" : "Compare modes", onclick: () => { compareOn = !compareOn; select(r); } }),
+      el("button", { text: wide ? "Show list" : "Full width", onclick: () => { $("split").classList.toggle("wide"); select(r); } }),
+      el("button", { text: "Only this question", onclick: () => { $("q").value = r.qid; page = 0; applyFilters(); } })));
+  const sampleNav = el("div", { class: "samples" }, el("span", { class: "muted", style: "font-size:12px;align-self:center", text: "All records for this question:" }),
+    samples.map(x => el("button", { class: x === r ? "cur" : "", title: `${x.mode} sample ${x.sample_idx}: ${outcomeOf(x)}`, onclick: () => select(x) },
+      el("span", { class: "swatch", style: `background:${modeColor(x.mode)};width:8px;height:8px;margin-right:4px` }), `${x.mode} s${x.sample_idx} ${(OUTCOMES[outcomeOf(x)] || OUTCOMES.unscored).icon}`)));
+  let body;
+  if (compareOn && twins.length > 1) {
+    // Same question + same sample => same option order, so the two modes are directly comparable.
+    body = el("div", {},
+      section("Input (shared by both modes except the assistant prefix)", `${fmt(r.n_input_tokens)} tokens (this mode)`, el("pre", { class: "text", text: r.input_text ?? "" }), false),
+      el("div", { class: "compare two" }, twins.map(t => el("div", {},
+        el("div", { class: "colhead" }, el("span", { class: "swatch", style: `background:${modeColor(t.mode)}` }), t.mode, badge(outcomeOf(t)),
+          el("span", { class: "muted", style: "font-weight:400", text: `${t.gold ?? "–"} / ${t.extracted_answer ?? "–"} · ${fmt(t.n_output_tokens)} tok · ${fmt(t.wall_time_s, 1)} s` }),
+          t !== r ? el("button", { text: "Open", style: "font-size:12px;padding:1px 7px", onclick: () => select(t) }) : null),
+        trajectory(t, true)))),
+      section("Details of the selected record", "", el("div", {}, metaGrid(r), trajectory(r, false)), false));
+  } else body = el("div", {}, metaGrid(r), trajectory(r, false));
+  $("detail").replaceChildren(head, sampleNav, body);
+}
+
+// ---------------------------------------------------------------- keyboard
+document.addEventListener("keydown", (e) => {
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName) || !view.length) return;
+  const i = selected ? view.indexOf(selected) : -1;
+  if (e.key === "j" || e.key === "k") {
+    const n = Math.max(0, Math.min(view.length - 1, i + (e.key === "j" ? 1 : -1)));
+    if (Math.floor(n / PAGE) !== page) { page = Math.floor(n / PAGE); renderTable(); }
+    select(view[n]);
+    document.querySelector("#tbody tr.sel")?.scrollIntoView({ block: "nearest" });
+  } else if (e.key === "f" && selected) { $("split").classList.toggle("wide"); select(selected); }
+  else if (e.key === "c" && selected) { compareOn = !compareOn; select(selected); }
+});
+</script>
+</body>
+</html>
