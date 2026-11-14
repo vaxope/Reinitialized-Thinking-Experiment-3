@@ -18,14 +18,16 @@ DEFAULT_CONFIG = REPO_ROOT / "configs" / "control.toml"
 # Sections and keys every consumer relies on. Checked at load time so a typo in the
 # config fails immediately instead of deep inside a run.
 REQUIRED = {
-    "model": ["name", "revision", "dtype"],
+    "model": ["name", "revision", "dtype", "chat_template_sha256"],
     "data": ["hf_repo", "hf_file", "hf_revision", "csv_sha256", "n_questions",
              "output_path", "strip_whitespace"],
     "prompt": ["modes", "n_options", "shuffle_salt"],
     "sampling": ["temperature", "top_p", "top_k", "min_p", "presence_penalty",
                  "repetition_penalty"],
     "generation": ["max_new_tokens", "samples_per_question", "pilot_n_questions",
-                   "pilot_samples_per_question"],
+                   "pilot_samples_per_question", "concurrency", "request_timeout_s",
+                   "server_wait_timeout_s"],
+    "server": ["host", "port", "random_seed"],
     "scoring": ["extraction_rule", "truncated_counts_as_wrong", "ci_level"],
 }
 

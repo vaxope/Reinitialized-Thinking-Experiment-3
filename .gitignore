@@ -39,3 +39,6 @@ hf_token*
 .obsidian/
 .vscode/
 .idea/
+
+# Per-user DeltaAI settings (account, paths)
+scripts/deltaai/env.sh

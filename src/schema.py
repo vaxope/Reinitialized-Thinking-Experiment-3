@@ -19,6 +19,18 @@ GENERATION_FIELDS = (
 # either absent or null; scoring writes them into a separate scored.jsonl.
 SCORE_FIELDS = ("extracted_answer", "extraction_rule", "correct")
 
+# Extra fields src/generate.py writes (not in CLAUDE.md's list, purely additive):
+GENERATE_EXTRA_FIELDS = (
+    "prompt_hash",            # hash of our prompt template (src/prompts.PROMPT_HASH)
+    "slurm_job_id",           # which Slurm job produced the record
+    "think_closed",           # think mode: did </think> appear in the output ids
+    "request_started_at",     # UTC time the request was sent
+    "server_text",            # SGLang's own decoded text, ONLY if it differs from ours
+    "sglang_meta",            # SGLang's meta_info (finish reason detail, token counts, latency)
+    "response_checks",        # ids source; server text / token counts agree with ours
+    "error_traceback",        # only on errors
+)
+
 # Extra fields score.py adds for transparency (not in CLAUDE.md's list, purely additive).
 SCORE_EXTRA_FIELDS = ("extraction_detail", "outcome", "truncated", "scoring_rule_version")
 

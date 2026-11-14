@@ -50,6 +50,42 @@ def read_jsonl(path: Path) -> tuple[list[dict], list[dict]]:
     return records, corrupt
 
 
+def latest_per_key(records: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Keep the LAST record per (run_id, qid, sample_idx, mode). Earlier ones exist only when a
+    failed request was re-sent (generate.py --retry-errors); they are returned so the summary
+    can list them. The raw log itself is never edited."""
+    last = {}
+    for i, r in enumerate(records):
+        last[(r.get("run_id"), r.get("qid"), r.get("sample_idx"), r.get("mode"))] = i
+    keep = set(last.values())
+    return [r for i, r in enumerate(records) if i in keep], [r for i, r in enumerate(records) if i not in keep]
+
+
+def run_timing(meta_path: Path) -> dict | None:
+    """GPU time from generate.py's run_meta.jsonl: sum of (end - start) over job segments.
+    Concurrent requests overlap, so this (not the sum of per-request wall times) is the GPU time."""
+    if not meta_path.exists():
+        return None
+    starts, segs, toks, gpus, interrupted = {}, [], 0, 1, 0
+    with meta_path.open() as f:
+        events = [json.loads(l) for l in f if l.strip()]
+    from datetime import datetime
+    for e in events:
+        if e["event"] == "start":
+            starts[e.get("slurm_job_id")] = datetime.fromisoformat(e["time"])
+            g = str(e.get("gpus") or "1")
+            gpus = len(g.split(",")) if "," in g else (int(g) if g.isdigit() else 1)
+        elif e["event"] == "end" and e.get("slurm_job_id") in starts:
+            segs.append((datetime.fromisoformat(e["time"]) - starts.pop(e.get("slurm_job_id"))).total_seconds())
+            toks += e.get("output_tokens", 0)
+            interrupted += bool(e.get("interrupted"))
+    total = sum(segs)
+    return {"segments": len(segs), "interrupted_segments": interrupted,
+            "unfinished_segments": len(starts), "elapsed_s": total,
+            "gpus": gpus, "gpu_hours": total * gpus / 3600,
+            "aggregate_output_tokens_per_s": toks / total if total else None}
+
+
 # ---------------------------------------------------------------- scoring one record
 def score_record(rec: dict, cfg: dict) -> dict:
     """Return a copy of rec with the score fields added. Decision order = OUTCOMES."""
@@ -205,7 +241,8 @@ def paired(scored: list[dict], modes: list[str]) -> dict | None:
             "note": "pairs share qid and sample_idx; with >1 sample per question, pairs are not independent"}
 
 
-def summarize(scored: list[dict], corrupt: list[dict], cfg: dict, source: str) -> dict:
+def summarize(scored: list[dict], corrupt: list[dict], cfg: dict, source: str,
+              superseded: list[dict] | None = None, timing: dict | None = None) -> dict:
     level = cfg["scoring"]["ci_level"]
     modes = [m for m in cfg["prompt"]["modes"] if any(r.get("mode") == m for r in scored)]
     unknown_modes = sorted({str(r.get("mode")) for r in scored} - set(cfg["prompt"]["modes"]))
@@ -217,6 +254,9 @@ def summarize(scored: list[dict], corrupt: list[dict], cfg: dict, source: str) -
         "n_records": len(scored),
         "corrupt_lines": corrupt,
         "duplicate_keys": sum(c - 1 for c in dup.values() if c > 1),
+        "superseded_records": [{"qid": r.get("qid"), "sample_idx": r.get("sample_idx"), "mode": r.get("mode"),
+                                "error": r.get("error")} for r in (superseded or [])],
+        "run_timing": timing,
         "missing_schema_fields": dict(schema),
         "unknown_modes": unknown_modes,
         "scoring": {"rule": cfg["scoring"]["extraction_rule"],
@@ -272,8 +312,15 @@ def to_markdown(s: dict) -> str:
     problems = []
     if s["corrupt_lines"]: problems.append(f"{len(s['corrupt_lines'])} unreadable lines")
     if s["duplicate_keys"]: problems.append(f"{s['duplicate_keys']} duplicate (run, qid, mode, sample) keys")
+    if s.get("superseded_records"): problems.append(f"{len(s['superseded_records'])} earlier failed attempts superseded by a retry (listed in summary.json)")
     if s["missing_schema_fields"]: problems.append(f"missing schema fields: {s['missing_schema_fields']}")
     if s["unknown_modes"]: problems.append(f"records with unknown modes: {s['unknown_modes']}")
+    t = s.get("run_timing")
+    if t:
+        lines += ["", f"**Run time:** {t['elapsed_s'] / 3600:.2f} h over {t['segments']} job segment(s) on {t['gpus']} GPU(s) = "
+                  f"**{t['gpu_hours']:.2f} GPU-hours**; aggregate {fmt(t['aggregate_output_tokens_per_s'], 0)} output tokens/s"
+                  + (f"; {t['interrupted_segments']} segment(s) stopped by SIGTERM (time limit) and resumed" if t.get("interrupted_segments") else "")
+                  + (f"; {t['unfinished_segments']} segment(s) without an end event (hard-killed job, time not counted)" if t["unfinished_segments"] else "")]
     lines += ["", "**Data problems:** " + ("; ".join(problems) if problems else "none")]
     return "\n".join(lines) + "\n"
 
@@ -296,8 +343,9 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"Outputs exist in {out_dir}; pass --overwrite to replace them.")
 
     records, corrupt = read_jsonl(src)
+    records, superseded = latest_per_key(records)
     scored = [score_record(r, cfg) for r in records]
-    summary = summarize(scored, corrupt, cfg, str(src))
+    summary = summarize(scored, corrupt, cfg, str(src), superseded, run_timing(src.parent / "run_meta.jsonl"))
     out_dir.mkdir(parents=True, exist_ok=True)
     with targets[0].open("w", encoding="utf-8") as f:
         for r in scored:

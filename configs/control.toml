@@ -25,6 +25,10 @@ name = "Qwen/Qwen3.5-2B"
 revision = "15852e8c16360a2fea060d615a32b45270f8a8fc"
 # Weight precision | CLAUDE.md ("bf16") | the model's native dtype; ~5 GB on GPU.
 dtype = "bfloat16"
+# SHA-256 of the official chat template shipped with the tokenizer at `revision`.
+# src/generate.py refuses to run if the loaded tokenizer's template differs, so a changed
+# template can never slip in unnoticed. Computed 2026-11-13 with transformers 5.23.0.
+chat_template_sha256 = "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80"
 
 [data]
 # Gated HF dataset repo holding GPQA | GPQA authors' official release.
@@ -74,16 +78,36 @@ presence_penalty = 1.5    # penalise tokens already used (fights repetition loop
 repetition_penalty = 1.0  # off (1.0 = no change)
 
 [generation]
-# STATUS: PROPOSED. Only used later by src/generate.py.
-status = "proposed"
-# Max new tokens, same for both modes | model card: "32,768 tokens for most queries"
-# (it suggests 81,920 for very hard math/code) | CLAUDE.md proposal. Truncation rate is reported.
-max_new_tokens = 32768
+# Used by src/generate.py.
+# Max new tokens, SAME for both modes. CONFIRMED by the user 2026-11-13: 81,920, so
+# thinking is effectively unrestricted. Source: Qwen3.5-2B model card, "For benchmarking on
+# highly complex problems ... we suggest setting the max output length to 81,920 tokens."
+# Longest GPQA prompt is 2,789 tokens, so prompt + output stays far below the model's
+# 262,144-token context. Truncation rate is still reported.
+max_new_tokens = 81920
 # Samples per (question, mode) | CLAUDE.md proposal; final value decided after the pilot.
 samples_per_question = 4
 # Pilot size | CLAUDE.md milestone 5: 20 questions x 2 modes x 1 sample.
 pilot_n_questions = 20
 pilot_samples_per_question = 1
+# Requests kept in flight at once. SGLang batches whatever is in flight, so more requests
+# = better GPU use; it queues the excess internally if memory runs short. 64 is a starting
+# value to be tuned from the pilot's throughput, not a measured optimum.
+concurrency = 64
+# Seconds one request may take before the client gives up and logs an error. Worst case is
+# 81,920 tokens at a few tens of tokens/s per sequence under load (~1 h); 3 h leaves margin.
+request_timeout_s = 10800
+# Seconds to wait for the server to load the model and answer /health before giving up.
+server_wait_timeout_s = 1800
+
+[server]
+# SGLang server settings, used by scripts/deltaai/serve_and_generate.sh and src/generate.py.
+# Server and client run on the same GPU node, so they talk over the loopback address.
+host = "127.0.0.1"
+port = 30000
+# Server-side random seed. Note: with batching on a GPU, token-level sampling is not
+# bit-reproducible across runs anyway; the seed is recorded so the setup is fully stated.
+random_seed = 0
 
 [scoring]
 # Name/version of the extraction rule in src/extract.py; written into every scored
