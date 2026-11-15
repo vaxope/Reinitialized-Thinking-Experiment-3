@@ -2,7 +2,7 @@
 
 Purpose : the only place where correctness is decided. Reads raw generation records
           (never modifies them), applies src/extract.py, and computes every metric of the
-          control run per mode, plus a paired think-vs-default comparison.
+          control run per mode, plus a paired comparison for every pair of modes.
 Inputs  : runs/<run>/generations.jsonl (schema: src/schema.py / CLAUDE.md "Logging"),
           configs/control.toml [scoring] and [prompt].
 Outputs : in the same folder (or --out-dir):
@@ -66,7 +66,7 @@ def run_timing(meta_path: Path) -> dict | None:
     Concurrent requests overlap, so this (not the sum of per-request wall times) is the GPU time."""
     if not meta_path.exists():
         return None
-    starts, segs, toks, gpus, interrupted = {}, [], 0, 1, 0
+    starts, segs, toks, gpus, interrupted, stalled = {}, [], 0, 1, 0, 0
     with meta_path.open() as f:
         events = [json.loads(l) for l in f if l.strip()]
     from datetime import datetime
@@ -78,9 +78,10 @@ def run_timing(meta_path: Path) -> dict | None:
         elif e["event"] == "end" and e.get("slurm_job_id") in starts:
             segs.append((datetime.fromisoformat(e["time"]) - starts.pop(e.get("slurm_job_id"))).total_seconds())
             toks += e.get("output_tokens", 0)
-            interrupted += bool(e.get("interrupted"))
+            stalled += bool(e.get("stalled"))
+            interrupted += bool(e.get("interrupted")) and not e.get("stalled")
     total = sum(segs)
-    return {"segments": len(segs), "interrupted_segments": interrupted,
+    return {"segments": len(segs), "interrupted_segments": interrupted, "stalled_segments": stalled,
             "unfinished_segments": len(starts), "elapsed_s": total,
             "gpus": gpus, "gpu_hours": total * gpus / 3600,
             "aggregate_output_tokens_per_s": toks / total if total else None}
@@ -94,7 +95,7 @@ def score_record(rec: dict, cfg: dict) -> dict:
     truncated = rec.get("finish_reason") == "length"  # hit max_new_tokens
     if rec.get("error") or rec.get("output_text") is None:
         detail = {"letter": None, "rule": "generation_error", "n_answer_fields": 0,
-                  "n_near_misses": 0, "think_closed": None}
+                  "n_near_misses": 0, "think_closed": None, "analysis_closed": None}
     else:
         detail = extract.extract_answer(rec["output_text"], rec["mode"], n_opt)
     letter = detail["letter"]
@@ -186,7 +187,9 @@ def summarize_mode(recs: list[dict], level: float) -> dict:
 
     out_tok = [r.get("n_output_tokens") for r in recs]
     think_tok = [r.get("n_think_tokens") for r in recs]
-    visible_tok = [(r["n_output_tokens"] - (r.get("n_think_tokens") or 0))
+    analysis_tok = [r.get("n_analysis_tokens") for r in recs]
+    # Visible = output minus the reasoning block (think block or analysis block).
+    visible_tok = [(r["n_output_tokens"] - (r.get("n_think_tokens") or 0) - (r.get("n_analysis_tokens") or 0))
                    if r.get("n_output_tokens") is not None else None for r in recs]
     tok_per_s = [r["n_output_tokens"] / r["wall_time_s"] for r in recs
                  if r.get("n_output_tokens") and r.get("wall_time_s")]
@@ -211,6 +214,7 @@ def summarize_mode(recs: list[dict], level: float) -> dict:
         "n_errors": sum(r["outcome"] == "error" for r in recs),
         "tokens_output": describe(out_tok),
         "tokens_think": describe(think_tok),
+        "tokens_analysis": describe(analysis_tok),
         "tokens_visible": describe(visible_tok),
         "tokens_input": describe([r.get("n_input_tokens") for r in recs]),
         "tokens_output_when_correct": describe([r.get("n_output_tokens") for r in recs if r["correct"]]),
@@ -222,8 +226,14 @@ def summarize_mode(recs: list[dict], level: float) -> dict:
     }
 
 
+def paired_all(scored: list[dict], modes: list[str]) -> list[dict]:
+    """One paired comparison per pair of modes, in config order (think-default,
+    think-reinit, default-reinit)."""
+    return [p for i, a in enumerate(modes) for b in modes[i + 1:] if (p := paired(scored, [a, b]))]
+
+
 def paired(scored: list[dict], modes: list[str]) -> dict | None:
-    """think vs default on the SAME (qid, sample_idx): same question, same option order."""
+    """Mode a vs mode b on the SAME (qid, sample_idx): same question, same option order."""
     if len(modes) != 2:
         return None
     a, b = modes
@@ -263,7 +273,7 @@ def summarize(scored: list[dict], corrupt: list[dict], cfg: dict, source: str,
                     "truncated_counts_as_wrong": cfg["scoring"]["truncated_counts_as_wrong"],
                     "config_sha256": cfg["_meta"]["sha256"]},
         "per_mode": {m: summarize_mode([r for r in scored if r["mode"] == m], level) for m in modes},
-        "paired": paired(scored, modes),
+        "paired": paired_all(scored, modes),
     }
 
 
@@ -296,6 +306,7 @@ def to_markdown(s: dict) -> str:
         row("truncation rate", lambda d: fmt(d["truncation_rate"], 3)),
         row("output tokens mean / median / p95 / max", lambda d: " / ".join(fmt(d["tokens_output"].get(k), 0) for k in ("mean", "median", "p95", "max"))),
         row("think tokens mean / median", lambda d: " / ".join(fmt(d["tokens_think"].get(k), 0) for k in ("mean", "median"))),
+        row("analysis tokens mean / median", lambda d: " / ".join(fmt(d.get("tokens_analysis", {}).get(k), 0) for k in ("mean", "median"))),
         row("visible tokens mean / median", lambda d: " / ".join(fmt(d["tokens_visible"].get(k), 0) for k in ("mean", "median"))),
         row("output tokens total", lambda d: fmt(d["tokens_output"].get("total"), 0)),
         row("output tokens mean: correct vs not", lambda d: f"{fmt(d['tokens_output_when_correct'].get('mean'), 0)} vs {fmt(d['tokens_output_when_not_correct'].get('mean'), 0)}"),
@@ -303,8 +314,7 @@ def to_markdown(s: dict) -> str:
         row("wall time s mean / median / max", lambda d: " / ".join(fmt(d["wall_time_s"].get(k), 1) for k in ("mean", "median", "max"))),
         row("tokens/s per request (median)", lambda d: fmt(d["output_tokens_per_s_per_request"].get("median"), 1)),
     ]
-    p = s["paired"]
-    if p:
+    for p in s["paired"] or []:
         a, b = p["modes"]
         lines += ["", f"**Paired ({a} vs {b}, {p['n_pairs']} pairs):** both correct {p['both_correct']} · "
                   f"only {a} {p[f'only_{a}_correct']} · only {b} {p[f'only_{b}_correct']} · both wrong {p['both_wrong']} · "
@@ -320,6 +330,7 @@ def to_markdown(s: dict) -> str:
         lines += ["", f"**Run time:** {t['elapsed_s'] / 3600:.2f} h over {t['segments']} job segment(s) on {t['gpus']} GPU(s) = "
                   f"**{t['gpu_hours']:.2f} GPU-hours**; aggregate {fmt(t['aggregate_output_tokens_per_s'], 0)} output tokens/s"
                   + (f"; {t['interrupted_segments']} segment(s) stopped by SIGTERM (time limit) and resumed" if t.get("interrupted_segments") else "")
+                  + (f"; {t['stalled_segments']} segment(s) stopped by the stall guard" if t.get("stalled_segments") else "")
                   + (f"; {t['unfinished_segments']} segment(s) without an end event (hard-killed job, time not counted)" if t["unfinished_segments"] else "")]
     lines += ["", "**Data problems:** " + ("; ".join(problems) if problems else "none")]
     return "\n".join(lines) + "\n"

@@ -1,13 +1,14 @@
 # GAR reinitialized-thinking rebuild: control run
 
-The baseline for later experiments: untrained **Qwen3.5-2B** answering **GPQA Diamond** (198 multiple-choice questions) in two modes, with every input, output token and error logged.
+The baseline for later experiments: untrained **Qwen3.5-2B** answering **GPQA Diamond** (198 multiple-choice questions) in three modes, with every input, output token and error logged.
 
-| Mode | Assistant turn starts with | Model writes |
-|---|---|---|
-| `think` | `<think>\n` | hidden reasoning, `</think>`, then the answer |
-| `default` | `<think>\n\n</think>\n\n` | the answer directly |
+| Mode | Prompt | Assistant turn starts with | Model writes |
+|---|---|---|---|
+| `think` | short task line + question | `<think>\n` | hidden reasoning, `</think>`, then the answer |
+| `default` | same as `think` | `<think>\n\n</think>\n\n` | the answer directly |
+| `reinit` | system persona + step-by-step analysis instructions + question | `<think>\n\n</think>\n\n<analysis>\n` | analysis, `</analysis>`, then the answer |
 
-Both modes get the same question, the same shuffled options, the same sampling settings and the same 81,920-token output cap. The prompt ends with Qwen's recommended instruction: ``Please show your choice in the `answer` field with only the choice letter, e.g., `"answer": "C"`.``
+`reinit` ("reinitialized thinking") turns Qwen's built-in thinking off and has the model reason in a plain-text `<analysis>` block instead. All modes get the same question, the same shuffled options, the same sampling settings and the same 81,920-token output cap. Every prompt ends with Qwen's recommended instruction: ``Please show your choice in the `answer` field with only the choice letter, e.g., `"answer": "C"`.``
 
 ## Files
 
@@ -15,8 +16,8 @@ Both modes get the same question, the same shuffled options, the same sampling s
 |---|---|
 | `configs/control.toml` | every run parameter, with its source |
 | `src/data.py` | pinned GPQA CSV to `data/gpqa_diamond.jsonl` |
-| `src/prompts.py` | exact model input per mode; option shuffle |
-| `src/extract.py` | strict answer extraction (last `"answer": "X"`) |
+| `src/prompts.py` | exact model input per mode (all prompt text lives here); option shuffle |
+| `src/extract.py` | strict answer extraction (last `"answer": "X"` after the reasoning block) |
 | `src/generate.py` | sends prompts to SGLang, logs every generation (runs on DeltaAI) |
 | `src/check_run.py` | pass/fail checks of a finished run |
 | `src/score.py` | scoring and metrics; `src/schema.py` lists the log fields |

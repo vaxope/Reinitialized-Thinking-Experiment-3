@@ -5,7 +5,10 @@
 #     bash scripts/deltaai/setup.sh
 # Steps (each prints what it checks; any failure stops the script):
 #   1. env.sh values set, the SGLang .sif image exists, HF cache directory created
-#   2. package versions inside the container (python, sglang, torch, transformers)
+#   2. package versions inside the container (python, sglang, torch, transformers), and the
+#      container pins from configs/control.toml [container]: the SGLang version inside the
+#      image must equal sglang_version; the .sif's SHA-256 is computed (about a minute for
+#      14 GB) and compared with sif_sha256 (if recorded; otherwise printed so you can record it)
 #   3. download the model + tokenizer at the PINNED revision into $HF_HOME (about 5 GB), so jobs
 #      can run with HF_HUB_OFFLINE=1 and never fetch anything mid-run
 #   4. data/gpqa_diamond.jsonl present with 198 questions (copy it from your Mac with
@@ -31,6 +34,28 @@ mkdir -p "$HF_HOME" runs/_slurm runs/_server_logs
 
 echo "== 2. container"
 env_report
+load_cfg
+echo "  pinned image: $IMAGE ($IMAGE_DIGEST)"
+got_ver=$(run "$PYTHON" -c 'import sglang; print(sglang.__version__)' 2>/dev/null || echo "not importable")
+if [ "$got_ver" = "$SGLANG_PIN" ]; then
+  echo "  sglang version $got_ver = pinned"
+elif [ "${#CONTAINER[@]}" -gt 0 ]; then
+  echo "  sglang version in the image is '$got_ver', config pins '$SGLANG_PIN': wrong image, or update [container]"; exit 1
+else
+  echo "  (local test mode: no container, sglang '$got_ver', pin not checked)"
+fi
+if [ "${#CONTAINER[@]}" -gt 0 ]; then
+  echo "  computing SHA-256 of $SGLANG_SIF (about a minute) ..."
+  sif_sha=$(sha256sum "$SGLANG_SIF" | cut -d' ' -f1)
+  if [ -z "$SIF_SHA256" ]; then
+    echo "  sif sha256: $sif_sha"
+    echo "  NOTE: not recorded yet. Put it in configs/control.toml [container] sif_sha256 (before the pilot)."
+  elif [ "$sif_sha" = "$SIF_SHA256" ]; then
+    echo "  sif sha256 $sif_sha = recorded"
+  else
+    echo "  sif sha256 $sif_sha != recorded $SIF_SHA256: the image file changed"; exit 1
+  fi
+fi
 
 echo "== 3. model + tokenizer at the pinned revision -> $HF_HOME"
 HF_HUB_OFFLINE=0 run "$PYTHON" -c '

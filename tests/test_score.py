@@ -19,7 +19,7 @@ def rec(kind, mode="think", qid="q1", s=0):
 def test_outcomes_for_each_kind():
     for kind, outcome in [("correct", "correct"), ("wrong", "wrong"), ("no_answer", "no_answer"),
                           ("truncated", "truncated"), ("error", "error")]:
-        for mode in ("think", "default"):
+        for mode in ("think", "default", "reinit"):
             r = score.score_record(rec(kind, mode), CFG)
             assert r["outcome"] == outcome, (kind, mode, r["outcome"])
             assert r["correct"] == (outcome == "correct")
@@ -28,6 +28,17 @@ def test_outcomes_for_each_kind():
 def test_truncated_think_with_draft_answer_is_not_correct():
     r = score.score_record(rec("truncated", "think"), CFG)
     assert r["extraction_rule"] == "unclosed_think" and r["correct"] is False
+
+
+def test_truncated_reinit_with_draft_answer_is_not_correct():
+    r = score.score_record(rec("truncated", "reinit"), CFG)
+    assert r["extraction_rule"] == "unclosed_analysis" and r["correct"] is False
+
+
+def test_visible_tokens_exclude_analysis_block():
+    d = score.summarize_mode([score.score_record(rec("correct", "reinit"), CFG)], 0.95)
+    assert d["tokens_analysis"]["mean"] > 0
+    assert d["tokens_visible"]["mean"] == d["tokens_output"]["mean"] - d["tokens_analysis"]["mean"]
 
 
 def test_truncated_with_answer_line_still_wrong_but_letter_kept():
@@ -79,7 +90,9 @@ def test_summary_counts_every_record():
         assert d["n_records"] == 24 and sum(d["outcomes"].values()) == 24
         assert d["ci_method"] == "clustered_by_question"
         assert d["n_correct"] == d["outcomes"].get("correct", 0)
-    assert s["paired"]["n_pairs"] == 24 and s["missing_schema_fields"] == {}
+    # one paired comparison per pair of modes: think-default, think-reinit, default-reinit
+    assert [p["modes"] for p in s["paired"]] == [["think", "default"], ["think", "reinit"], ["default", "reinit"]]
+    assert all(p["n_pairs"] == 24 for p in s["paired"]) and s["missing_schema_fields"] == {}
 
 
 def test_end_to_end_cli_and_overwrite_guard():
@@ -89,9 +102,9 @@ def test_end_to_end_cli_and_overwrite_guard():
         g.write_text("\n".join(lines) + "\n")
         score.main([str(g)])
         s = json.loads((Path(d) / "summary.json").read_text())
-        assert s["corrupt_lines"][0]["line"] == 9 and s["n_records"] == 8
+        assert s["corrupt_lines"][0]["line"] == 13 and s["n_records"] == 12
         assert s["per_mode"]["think"]["ci_method"] == "wilson"
-        assert len((Path(d) / "scored.jsonl").read_text().splitlines()) == 8
+        assert len((Path(d) / "scored.jsonl").read_text().splitlines()) == 12
         try:
             score.main([str(g)])
         except SystemExit:

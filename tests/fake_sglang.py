@@ -12,9 +12,13 @@ Purpose : lets src/generate.py and scripts/deltaai/serve_and_generate.sh be run 
                      "prompt_tokens", "completion_tokens", "output_token_logprobs": [[lp, id, None], ...]}}
           It does NOT run a model: the "answer" is synthetic text, so no GPQA content is involved.
 Behaviour: think-mode prompts (ending in "<think>\\n") get reasoning + </think> + an answer field;
+          reinit prompts (ending in "<analysis>\\n") get reasoning + </analysis> + an answer field;
           default-mode prompts get visible reasoning + an answer field. Output longer than
           max_new_tokens is cut with finish_reason "length". With --fake-error-every N, every
           Nth /generate request returns HTTP 500 (to test error logging).
+Stall-guard tests: --fake-hang-after N makes every /generate after the N-th, and
+          /health_generate, hang (a hung GPU process); --fake-latency-s S makes each /generate
+          slow while /health_generate still answers (alive, just busy).
 Usage   : python -m tests.fake_sglang --model-path Qwen/Qwen3.5-2B --port 30000 [--fake-error-every 7]
 """
 from __future__ import annotations
@@ -38,6 +42,8 @@ def fake_completion(input_ids: list[int], tok) -> str:
     reasoning = " ".join(f"Step {i}: compare the options." for i in range(n_steps))
     if prompt.endswith("<think>\n"):  # think mode: the open block is in the prompt
         return f"{reasoning}\n</think>\n\n{{\"answer\": \"{letter}\"}}"
+    if prompt.endswith("<analysis>\n"):  # reinit mode: the open analysis block is in the prompt
+        return f"{reasoning}\n</analysis>\n\n{{\"answer\": \"{letter}\"}}"
     return f"{reasoning}\n\n{{\"answer\": \"{letter}\"}}"
 
 
@@ -59,12 +65,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(503, {"error": "loading"})
         if self.path == "/health":
             return self._send(200, {})
+        if self.path == "/health_generate":  # real SGLang: runs a 1-token generation
+            if self._hung():
+                time.sleep(3600)
+            return self._send(200, {})
         if self.path in ("/get_server_info", "/server_info"):
             return self._send(200, {"version": "fake-sglang", "model_path": a.model_path, "revision": a.revision,
                                     "dtype": a.dtype, "random_seed": a.random_seed})
         if self.path == "/get_model_info":
             return self._send(200, {"model_path": a.model_path, "is_generation": True})
         return self._send(404, {"error": f"no route {self.path}"})
+
+    def _hung(self) -> bool:
+        after = STATE["args"].fake_hang_after
+        return bool(after) and STATE["n_requests"] >= after
 
     def do_POST(self):
         if self.path != "/generate":
@@ -73,6 +87,8 @@ class Handler(BaseHTTPRequestHandler):
         with STATE["lock"]:
             STATE["n_requests"] += 1
             n = STATE["n_requests"]
+        if STATE["args"].fake_hang_after and n > STATE["args"].fake_hang_after:
+            time.sleep(3600)  # hung: never answers
         every = STATE["args"].fake_error_every
         if every and n % every == 0:
             return self._send(500, {"error": "fake internal server error"})
@@ -102,6 +118,7 @@ def main(argv=None):
     ap.add_argument("--random-seed", type=int, default=0)
     ap.add_argument("--fake-error-every", type=int, default=0)
     ap.add_argument("--fake-latency-s", type=float, default=0.01)
+    ap.add_argument("--fake-hang-after", type=int, default=0, help="hang every /generate after the N-th")
     ap.add_argument("--fake-load-s", type=float, default=1.0, help="seconds before /health turns 200")
     args, _unknown = ap.parse_known_args(argv)  # ignore real SGLang flags we don't model
     from transformers import AutoTokenizer

@@ -7,7 +7,7 @@
 #
 # It reads scripts/deltaai/env.sh (account, partition, time limits), prints exactly what will
 # be requested (1 GPU, time limit, the maximum GPU-hours that limit allows), asks for
-# confirmation, then calls sbatch with --account/--partition/--time added on the command
+# confirmation (showing the account's remaining balance from `accounts`), then calls sbatch with --account/--partition/--time added on the command
 # line (those can't be hard-coded in the .sbatch files because they differ per user).
 # --dry-run prints the sbatch command without submitting.
 # Re-submitting the same pilot/full command after a time-limit kill RESUMES the run.
@@ -39,9 +39,13 @@ MAX_GPUH=$(awk -v h="$hh" -v m="$mm" -v s="$ss" 'BEGIN { printf "%.2f", (h*3600 
 mkdir -p runs/_slurm   # Slurm does not create the --output directory itself
 
 CMD=(sbatch --account="$DELTAAI_ACCOUNT" --partition="$DELTAAI_PARTITION" --time="$TIME" "$SCRIPT" "${JOB_ARGS[@]+"${JOB_ARGS[@]}"}")
-echo "Job:       $KIND (${JOB_ARGS[*]:-smoke test: 2 questions x 1 sample x 2 modes})"
+echo "Job:       $KIND (${JOB_ARGS[*]:-smoke test: 2 questions x 1 sample x 3 modes})"
 echo "Request:   1 node, 1 GPU, time limit $TIME on partition $DELTAAI_PARTITION, account $DELTAAI_ACCOUNT"
 echo "Cost:      at most $MAX_GPUH GPU-hours (charged for time actually used)"
+# Remaining balance of the account (DeltaAI's `accounts` prints: Account  Balance(Hours)  Deposited(Hours) ...).
+# Display only: the allocation is shared, so every submission shows what is left.
+BAL=$(accounts 2>/dev/null | awk -v a="$DELTAAI_ACCOUNT" '$1 == a { print $2 " of " $3 " hours left" }' || true)
+echo "Balance:   ${BAL:-unavailable (run \`accounts\` to check)} on $DELTAAI_ACCOUNT"
 echo "Command:   ${CMD[*]}"
 if [ "$DRY" = 1 ]; then echo "(dry run: not submitted)"; exit 0; fi
 read -r -p "Submit this job? [y/N] " ans

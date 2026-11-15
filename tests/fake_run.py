@@ -49,10 +49,15 @@ def make_record(qid: str, sample_idx: int, mode: str, kind: str, cfg: dict, rng:
         output_text = reasoning + (f'\n"answer": "{gold}"' if kind == "truncated" else "")  # draft answer inside unfinished thinking
         if visible is not None:
             output_text += "\n</think>\n\n" + visible
+    elif mode == "reinit":
+        output_text = reasoning + (f'\n"answer": "{gold}"' if kind == "truncated" else "")  # draft answer inside unfinished analysis
+        if visible is not None:
+            output_text += "\n</analysis>\n\n" + visible
     else:
         output_text = (reasoning + "\n" + visible) if visible else reasoning
     out_ids = fake_tokens(output_text) if output_text else []
     n_think = (len(fake_tokens(output_text.split("</think>")[0])) + 1) if (mode == "think" and output_text) else 0
+    n_analysis = (len(fake_tokens(output_text.split("</analysis>")[0])) + 1) if (mode == "reinit" and output_text) else 0
     return {
         "run_id": "demo_fake", "mode": mode, "model": cfg["model"]["name"],
         "model_revision": cfg["model"]["revision"], "qid": qid, "sample_idx": sample_idx,
@@ -63,7 +68,7 @@ def make_record(qid: str, sample_idx: int, mode: str, kind: str, cfg: dict, rng:
         # SGLang's format: [logprob, token_id, token_text]
         "output_logprobs": [[round(-rng.random() * 2, 4), t, None] for t in out_ids],
         "finish_reason": finish, "n_input_tokens": len(fake_tokens(input_text)),
-        "n_output_tokens": len(out_ids), "n_think_tokens": n_think, "gold": gold,
+        "n_output_tokens": len(out_ids), "n_think_tokens": n_think, "n_analysis_tokens": n_analysis, "gold": gold,
         "sampling_params": {k: v for k, v in cfg["sampling"].items() if k != "status"},
         "sglang_version": "synthetic", "wall_time_s": None if error else round(len(out_ids) / 150 + rng.random(), 3),
         "error": error,

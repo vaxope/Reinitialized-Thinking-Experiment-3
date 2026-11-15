@@ -4,7 +4,7 @@ Purpose : one function, `load_config`, so every module reads parameters the same
           and nothing hard-codes a value that belongs in the config.
 Input   : a TOML file path (default: configs/control.toml at the repo root).
 Output  : a plain nested dict, e.g. cfg["prompt"]["n_options"] -> 4.
-Pipeline: used by src/data.py, src/score.py (and later src/generate.py).
+Pipeline: used by src/data.py, src/generate.py, src/check_run.py, src/score.py.
 """
 from __future__ import annotations
 
@@ -26,7 +26,8 @@ REQUIRED = {
                  "repetition_penalty"],
     "generation": ["max_new_tokens", "samples_per_question", "pilot_n_questions",
                    "pilot_samples_per_question", "concurrency", "request_timeout_s",
-                   "server_wait_timeout_s"],
+                   "server_wait_timeout_s", "stall_check_s", "stall_probe_timeout_s"],
+    "container": ["image", "image_digest_arm64", "sglang_version", "sif_sha256"],
     "server": ["host", "port", "random_seed"],
     "scoring": ["extraction_rule", "truncated_counts_as_wrong", "ci_level"],
 }
@@ -41,6 +42,11 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> dict:
                for key in keys if key not in cfg.get(sec, {})]
     if missing:
         raise KeyError(f"{path}: missing config keys: {missing}")
+    # Every mode must be one src/prompts.py knows how to build, listed once.
+    from src.prompts import MODES  # imported here: prompts.py does not import config.py
+    modes = cfg["prompt"]["modes"]
+    if not modes or len(set(modes)) != len(modes) or set(modes) - set(MODES):
+        raise ValueError(f"{path}: [prompt] modes {modes} must be distinct and from {MODES}")
     # Record which exact config produced a run: hash of the file's bytes.
     cfg["_meta"] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     return cfg

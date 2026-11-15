@@ -14,10 +14,11 @@ Checks  (FAIL):
   - input_token_ids == tokenizer(input_text) (if transformers is available)
   - n_input_tokens / n_output_tokens equal the lengths of the logged id lists
   - finish_reason is "stop" or "length"; SGLang's own token counts agree with ours
-  - think mode: n_think_tokens counts up to the first </think>; default mode: 0
+  - think mode: n_think_tokens counts up to the first </think>; other modes: 0
+  - reinit mode: n_analysis_tokens counts up to the first </analysis>; other modes: 0
   - every planned (qid, sample, mode) of the run is present exactly once
-Warnings (do not fail): server text differs from our decode; think-mode output that stopped
-without closing </think>; default-mode output containing </think>; truncations.
+Warnings (do not fail): server text differs from our decode; think/reinit output that stopped
+without closing its block; </think> in default or reinit output; truncations.
 Usage: python -m src.check_run runs/<run_id>
 """
 from __future__ import annotations
@@ -52,7 +53,9 @@ def main(argv=None) -> int:
     meta = [json.loads(l) for l in (run_dir / "run_meta.jsonl").read_text().splitlines() if l.strip()]
     starts = [m for m in meta if m["event"] == "start"]
     ends = [m for m in meta if m["event"] == "end"]
-    if n_int := sum(bool(m.get("interrupted")) for m in ends):
+    if n_stall := sum(bool(m.get("stalled")) for m in ends):
+        warn(f"{n_stall} job segment(s) were stopped by the stall guard (server stopped generating)")
+    if n_int := sum(bool(m.get("interrupted")) and not m.get("stalled") for m in ends):
         warn(f"{n_int} job segment(s) were interrupted by SIGTERM (time limit) and resumed")
     if len(starts) != len(ends):
         warn(f"{len(starts)} start events but {len(ends)} end events (a job segment was killed before finishing)")
@@ -113,11 +116,22 @@ def main(argv=None) -> int:
                 fail(f"{k}: n_think_tokens {r['n_think_tokens']} != {expect}")
             if r["finish_reason"] == "stop" and think_close not in ids:
                 warn(f"{k}: stopped without closing </think>")
-        if r["mode"] == "default":
+        if r["mode"] in ("default", "reinit"):
             if r["n_think_tokens"] != 0:
-                fail(f"{k}: default mode with n_think_tokens {r['n_think_tokens']}")
+                fail(f"{k}: {r['mode']} mode with n_think_tokens {r['n_think_tokens']}")
             if "</think>" in (r["output_text"] or ""):
-                warn(f"{k}: default-mode output contains </think>")
+                warn(f"{k}: {r['mode']}-mode output contains </think>")
+        if r["mode"] == "reinit":
+            if tok is not None:
+                ids = r["output_token_ids"]
+                kk = prompts.tokens_through(lambda x: tok.decode(x, skip_special_tokens=False),
+                                            ids, prompts.ANALYSIS_CLOSE)
+                if r.get("n_analysis_tokens") != (kk if kk is not None else len(ids)):
+                    fail(f"{k}: n_analysis_tokens {r.get('n_analysis_tokens')} != {kk if kk is not None else len(ids)}")
+            if r["finish_reason"] == "stop" and prompts.ANALYSIS_CLOSE not in (r["output_text"] or ""):
+                warn(f"{k}: stopped without closing </analysis>")
+        elif r.get("n_analysis_tokens") not in (0, None):
+            fail(f"{k}: {r['mode']} mode with n_analysis_tokens {r['n_analysis_tokens']}")
         if r["finish_reason"] == "length":
             warn(f"{k}: truncated at {r['n_output_tokens']} tokens")
 

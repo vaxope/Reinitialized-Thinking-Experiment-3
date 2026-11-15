@@ -3,7 +3,8 @@
 # Provides:
 #   run <cmd...>   run a command inside the SGLang Apptainer container (or directly, for local tests)
 #   PYTHON         the python inside the container ("python3")
-#   load_cfg       sets MODEL, REVISION, DTYPE, HOST, PORT, SEED, WAIT_S from configs/control.toml
+#   load_cfg       sets MODEL, REVISION, DTYPE, HOST, PORT, SEED, WAIT_S, and the [container] pins
+#                  IMAGE, IMAGE_DIGEST, SGLANG_PIN, SIF_SHA256 from configs/control.toml
 #   env_report     prints node, GPU, container and package versions into the job log
 #
 # Local testing (no Apptainer/GPU): set CONTAINER_EXEC="" so commands run directly, and point
@@ -55,7 +56,9 @@ c = tomllib.load(open("configs/control.toml", "rb"))
 for k, v in {"MODEL": c["model"]["name"], "REVISION": c["model"]["revision"],
              "DTYPE": c["model"]["dtype"], "HOST": c["server"]["host"],
              "PORT": c["server"]["port"], "SEED": c["server"]["random_seed"],
-             "WAIT_S": c["generation"]["server_wait_timeout_s"]}.items():
+             "WAIT_S": c["generation"]["server_wait_timeout_s"],
+             "IMAGE": c["container"]["image"], "IMAGE_DIGEST": c["container"]["image_digest_arm64"],
+             "SGLANG_PIN": c["container"]["sglang_version"], "SIF_SHA256": c["container"]["sif_sha256"]}.items():
     print(f"{k}={shlex.quote(str(v))}")
 ')"
 }

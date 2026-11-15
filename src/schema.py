@@ -2,8 +2,8 @@
 
 Purpose : one list of field names (from CLAUDE.md "Logging") that every record in
           runs/<run>/generations.jsonl must have. src/score.py checks records against
-          it; the future src/generate.py will write exactly these fields.
-Pipeline: (later) generate.py -> generations.jsonl -> [schema check in score.py] -> scored.jsonl
+          it; src/generate.py writes exactly these fields (plus the extras below).
+Pipeline: generate.py -> generations.jsonl -> [schema check in score.py] -> scored.jsonl
 """
 
 # Written at generation time (before any scoring). Order follows CLAUDE.md.
@@ -24,6 +24,9 @@ GENERATE_EXTRA_FIELDS = (
     "prompt_hash",            # hash of our prompt template (src/prompts.PROMPT_HASH)
     "slurm_job_id",           # which Slurm job produced the record
     "think_closed",           # think mode: did </think> appear in the output ids
+    "n_analysis_tokens",      # reinit mode: tokens up to and including the first </analysis>
+                              #   (all tokens if it never closed); 0 in the other modes
+    "analysis_closed",        # reinit mode: did </analysis> appear in the output
     "request_started_at",     # UTC time the request was sent
     "server_text",            # SGLang's own decoded text, ONLY if it differs from ours
     "sglang_meta",            # SGLang's meta_info (finish reason detail, token counts, latency)

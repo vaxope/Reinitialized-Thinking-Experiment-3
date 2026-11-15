@@ -4,20 +4,26 @@ Purpose : turn an output string into (letter or None, rule that decided it). Eve
           decision is named, so failures are counted by cause instead of guessed away.
 Inputs  : output_text (what the model generated AFTER the prompt), the mode, n_options.
 Output  : {"letter": "B" | None, "rule": <str>, "n_answer_fields": int,
-           "n_near_misses": int, "think_closed": bool | None}
+           "n_near_misses": int, "think_closed": bool | None, "analysis_closed": bool | None}
 Pipeline: runs/<run>/generations.jsonl -> src/score.py -> [extract_answer] -> scored.jsonl.
           viewer/index.html uses the same pattern (ANSWER_FIELD) only to highlight text.
 
 The prompt (src/prompts.MCQ_FORMAT_INSTRUCTION, Qwen's recommended MCQ format) asks:
     Please show your choice in the `answer` field with only the choice letter, e.g., `"answer": "C"`.
 
-Rule "last_answer_field_v1" (strict, in this order):
+Rule "last_answer_field_v2" (strict, in this order). v2 = v1 + the reinit mode (step 2b);
+think and default are decided exactly as in v1:
   1. empty output                               -> None, "empty_output"
   2. think mode: split at the FIRST "</think>". The prompt already opened <think>, so the
      output begins inside the reasoning; the first </think> closes that block.
      No "</think>" at all                       -> None, "unclosed_think"
      (reasoning never finished; any answer in it is a draft, not an answer)
-  3. in the visible text (think: after </think>; default: whole output), find every
+  2b. reinit mode: split at the FIRST "</analysis>". The prompt already opened <analysis>,
+     so the output begins inside the analysis; the first </analysis> closes it.
+     No "</analysis>" at all                    -> None, "unclosed_analysis"
+     (same reasoning as unclosed_think; the prompt asks for the answer after </analysis>)
+  3. in the visible text (think: after </think>; reinit: after </analysis>; default: whole
+     output), find every
      answer field:  "answer": "C"   (key exactly `answer` in double quotes, a colon,
      one capital letter in double quotes; spaces around the colon allowed; it may sit
      inside a JSON object or a ```json block, or stand alone)
@@ -36,7 +42,9 @@ from __future__ import annotations
 import re
 import string
 
-RULE_NAME = "last_answer_field_v1"
+from src.prompts import ANALYSIS_CLOSE
+
+RULE_NAME = "last_answer_field_v2"
 
 # Strict: "answer" : "X"  with straight double quotes and one capital letter.
 ANSWER_FIELD = re.compile(r'"answer"\s*:\s*"([A-Z])"')
@@ -46,38 +54,44 @@ THINK_CLOSE = "</think>"
 
 
 def split_output(output_text: str, mode: str) -> dict:
-    """Separate hidden reasoning from the visible answer.
+    """Separate the reasoning block from the visible answer.
 
     think  : reasoning = text before the first </think>, visible = text after it.
+    reinit : reasoning = text before the first </analysis>, visible = text after it.
     default: the prompt contains a closed empty think block, so everything is visible.
     """
-    if mode == "think":
-        if THINK_CLOSE in output_text:
-            reasoning, visible = output_text.split(THINK_CLOSE, 1)
-            return {"reasoning": reasoning, "visible": visible, "think_closed": True}
-        return {"reasoning": output_text, "visible": "", "think_closed": False}
+    if mode in ("think", "reinit"):
+        close = THINK_CLOSE if mode == "think" else ANALYSIS_CLOSE
+        closed = close in output_text
+        reasoning, visible = output_text.split(close, 1) if closed else (output_text, "")
+        flag = "think_closed" if mode == "think" else "analysis_closed"
+        other = "analysis_closed" if mode == "think" else "think_closed"
+        return {"reasoning": reasoning, "visible": visible, flag: closed, other: None}
     if mode == "default":
-        return {"reasoning": "", "visible": output_text, "think_closed": None}
+        return {"reasoning": "", "visible": output_text, "think_closed": None, "analysis_closed": None}
     raise ValueError(f"unknown mode {mode!r}")
 
 
 def extract_answer(output_text: str | None, mode: str, n_options: int = 4) -> dict:
-    """Apply rule last_answer_field_v1 (see module docstring)."""
-    if mode not in ("think", "default"):
+    """Apply rule last_answer_field_v2 (see module docstring)."""
+    if mode not in ("think", "default", "reinit"):
         raise ValueError(f"unknown mode {mode!r}")
     if not output_text or not output_text.strip():
         return {"letter": None, "rule": "empty_output", "n_answer_fields": 0,
-                "n_near_misses": 0, "think_closed": None}
+                "n_near_misses": 0, "think_closed": None, "analysis_closed": None}
     parts = split_output(output_text, mode)
-    if mode == "think" and not parts["think_closed"]:
+    flags = {"think_closed": parts["think_closed"], "analysis_closed": parts["analysis_closed"]}
+    if parts["think_closed"] is False:
         return {"letter": None, "rule": "unclosed_think", "n_answer_fields": 0,
-                "n_near_misses": 0, "think_closed": False}
+                "n_near_misses": 0, **flags}
+    if parts["analysis_closed"] is False:
+        return {"letter": None, "rule": "unclosed_analysis", "n_answer_fields": 0,
+                "n_near_misses": 0, **flags}
     visible = parts["visible"]
     matches = ANSWER_FIELD.findall(visible)
     # Near misses = loose look-alikes that are not strict fields (strict ones removed first).
     near = NEAR_MISS.findall(ANSWER_FIELD.sub("", visible))
-    base = {"n_answer_fields": len(matches), "n_near_misses": len(near),
-            "think_closed": parts["think_closed"]}
+    base = {"n_answer_fields": len(matches), "n_near_misses": len(near), **flags}
     if not matches:
         return {"letter": None, "rule": "no_answer_field", **base}
     letter = matches[-1]

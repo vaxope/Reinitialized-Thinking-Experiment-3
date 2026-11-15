@@ -1,12 +1,12 @@
 # configs/control.toml: every parameter of the control (baseline) run.
 #
 # Purpose : single source of truth for the control run of untrained Qwen3.5-2B on
-#           GPQA Diamond in two modes (think, default). No other file hard-codes
+#           GPQA Diamond in three modes (think, default, reinit). No other file hard-codes
 #           these values; they read them via src/config.py.
 # Inputs  : none (hand-edited).
 # Read by : src/data.py (data section), src/prompts.py (prompt section),
-#           src/score.py (scoring section), and later src/generate.py (model,
-#           sampling, generation sections; not yet written).
+#           src/score.py (scoring section), src/generate.py and src/check_run.py (all),
+#           scripts/deltaai/common.sh (model, server). Prompt TEXT lives in src/prompts.py.
 # Format  : TOML, parsed by Python's built-in `tomllib`, so no extra package is needed.
 #           CLAUDE.md names this file control.yaml; TOML was chosen because YAML
 #           needs PyYAML (not installed) while TOML also supports comments.
@@ -51,8 +51,11 @@ output_path = "data/gpqa_diamond.jsonl"
 strip_whitespace = true
 
 [prompt]
-# The two modes of the control run | CLAUDE.md. Order = display order everywhere.
-modes = ["think", "default"]
+# The modes of the control run. Order = display order everywhere. Each is defined in
+# src/prompts.py: think = thinking on; default = thinking off; reinit = thinking off, a
+# system persona, and reasoning in a plain-text <analysis> block (added by the user
+# 2026-11-15, before any run). All modes share questions, option order, sampling and cap.
+modes = ["think", "default", "reinit"]
 # Options per question | GPQA format (1 correct + 3 incorrect).
 n_options = 4
 # Salt mixed into the option-shuffle seed: seed string = "<salt>|<qid>|<sample_idx>".
@@ -62,8 +65,8 @@ shuffle_salt = "gpqa-control-v1"
 
 [sampling]
 # STATUS: CONFIRMED by the user 2026-11-13. Only used later by src/generate.py.
-# ONE setting for BOTH modes, so the only difference between think and default is the
-# assistant prefix. Values = Qwen3.5-2B model card, "thinking mode, text tasks":
+# ONE setting for ALL modes, so the only difference between think and default is the
+# assistant prefix (and reinit differs only by its prompt). Values = Qwen3.5-2B model card, "thinking mode, text tasks":
 #   temperature=1.0, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=1.5, repetition_penalty=1.0
 # The card recommends different values for non-thinking text tasks (top_p=1.0,
 # presence_penalty=2.0); deliberately NOT used, so default mode runs slightly off its
@@ -79,7 +82,7 @@ repetition_penalty = 1.0  # off (1.0 = no change)
 
 [generation]
 # Used by src/generate.py.
-# Max new tokens, SAME for both modes. CONFIRMED by the user 2026-11-13: 81,920, so
+# Max new tokens, SAME for all modes. CONFIRMED by the user 2026-11-13: 81,920, so
 # thinking is effectively unrestricted. Source: Qwen3.5-2B model card, "For benchmarking on
 # highly complex problems ... we suggest setting the max output length to 81,920 tokens."
 # Longest GPQA prompt is 2,789 tokens, so prompt + output stays far below the model's
@@ -87,7 +90,7 @@ repetition_penalty = 1.0  # off (1.0 = no change)
 max_new_tokens = 81920
 # Samples per (question, mode) | CLAUDE.md proposal; final value decided after the pilot.
 samples_per_question = 4
-# Pilot size | CLAUDE.md milestone 5: 20 questions x 2 modes x 1 sample.
+# Pilot size | CLAUDE.md milestone 5: 20 questions x 3 modes x 1 sample = 60 generations.
 pilot_n_questions = 20
 pilot_samples_per_question = 1
 # Requests kept in flight at once. SGLang batches whatever is in flight, so more requests
@@ -99,6 +102,35 @@ concurrency = 64
 request_timeout_s = 10800
 # Seconds to wait for the server to load the model and answer /health before giving up.
 server_wait_timeout_s = 1800
+# Stall guard (added 2026-11-15, to protect the shared allocation). If NO generation finishes
+# for stall_check_s, generate.py asks the server to produce one token (/health_generate, which
+# goes through SGLang's scheduler, so it also catches a hung GPU process whose HTTP front end
+# still answers). It waits up to stall_probe_timeout_s for that token:
+#   - the probe succeeds -> the server is alive and only busy with long outputs: keep going;
+#   - the probe fails    -> the server is hung: write an "end" event (stalled), exit with
+#                           code 4 so the Slurm job ends instead of idling to its time limit.
+# Finished records stay on disk; resubmitting the same command resumes. 1,200 s: with up to
+# 64 requests in flight, completions normally arrive every few seconds to minutes; 20 quiet
+# minutes are either a hang or a tail of very long outputs, which the probe tells apart.
+stall_check_s = 1200
+# 300 s: generous for one token even when the batch is full and the probe has to queue.
+stall_probe_timeout_s = 300
+
+[container]
+# The SGLang container the generations come from (added 2026-11-15). The engine version is part
+# of the setup being reproduced, so it is pinned here, not only in the per-user env.sh path.
+# Image tag and its linux/arm64 manifest digest on Docker Hub (read 2026-11-14): this is what
+# `apptainer pull docker://lmsysorg/sglang:v0.5.23-runtime` converted into the .sif.
+image = "lmsysorg/sglang:v0.5.23-runtime"
+image_digest_arm64 = "sha256:8238e1c786555fe7937d8c97fea840ea0e1284f60cf700a131f6a00e03ba16d1"
+# The SGLang version the server must report (/get_server_info). generate.py REFUSES pilot_* and
+# control_* runs on any other version and only warns for smoke tests (the smoke test is where
+# a mismatch, e.g. a different version string format, is seen first).
+sglang_version = "0.5.23"
+# SHA-256 of the .sif file itself. A .sif build is not byte-reproducible, so it can't be known in
+# advance: setup.sh computes and prints it; copy it here once. When set, setup.sh fails if the
+# .sif on disk differs (a swapped or re-pulled image). Empty = not recorded yet (warning only).
+sif_sha256 = ""
 
 [server]
 # SGLang server settings, used by scripts/deltaai/serve_and_generate.sh and src/generate.py.
@@ -112,7 +144,9 @@ random_seed = 0
 [scoring]
 # Name/version of the extraction rule in src/extract.py; written into every scored
 # record so a later rule change is visible in the data.
-extraction_rule = "last_answer_field_v1"
+# v2 (2026-11-15) = v1 + reinit mode (answer after the first </analysis>); think/default
+# are decided exactly as in v1.
+extraction_rule = "last_answer_field_v2"
 # If true, a generation that hit max_new_tokens (finish_reason "length") is scored
 # wrong even if an "answer": "X" field happens to appear before the cut. Reason: a
 # truncated output did not finish; counting lucky partial answers would hide the

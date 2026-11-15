@@ -13,9 +13,16 @@ Pipeline: data.py -> prompts.py -> [generate.py <-> SGLang] -> score.py -> viewe
 
 Safety checks before any request:
   1. the tokenizer's official chat template hash equals [model] chat_template_sha256;
-  2. template parity: prompts.build_text == tokenizer.apply_chat_template, both modes;
+  2. template parity: prompts.build_text == tokenizer.apply_chat_template (+ reinit's
+     "<analysis>\\n"), every mode;
   3. the server is healthy and serves the configured model;
   4. a run directory created with a different config is refused (comparability).
+
+Stall guard: if no generation finishes for [generation] stall_check_s, the server is probed
+(/health_generate). Alive -> keep waiting; hung -> "end" event with "stalled", exit code 4.
+
+Exit codes: 0 all generations fine | 3 some were logged with errors | 4 stalled server |
+            143 SIGTERM (time limit). In every case the records written so far are kept.
 
 Resuming: records are keyed by (qid, sample_idx, mode). Re-running the same command skips
 keys already in generations.jsonl, so a job killed at its time limit continues where it
@@ -42,7 +49,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -57,6 +64,9 @@ PROGRESS_EVERY = 10        # print a progress line every N finished generations
 # Run ids that may never use --max-new-tokens/--samples/--limit-questions overrides, so a
 # real run can't be accidentally created with non-standard settings.
 PROTECTED_PREFIXES = ("control", "pilot")
+EXIT_ERRORS = 3            # some generations were logged with an error
+EXIT_STALLED = 4           # stall guard: the server stopped producing output (see [generation])
+EXIT_INTERRUPTED = 143     # SIGTERM (128 + 15), Slurm's time limit or scancel
 
 
 class Interrupted(Exception):
@@ -211,11 +221,18 @@ def run_one(req: dict, base: str, tok, think_close_id: int, timeout: float) -> d
         matched = fr.get("matched") if isinstance(fr, dict) else None
         trimmed = out_ids[:-1] if finish == "stop" and out_ids and out_ids[-1] == matched else out_ids
         text_for_check = tok.decode(trimmed, skip_special_tokens=False)
+        # Reasoning-block length. think: up to and including the first </think> (one special
+        # token, so found by id). reinit: up to the token that completes the first
+        # "</analysis>" (several ordinary tokens, so found by decoding prefixes). If the block
+        # never closes, all output tokens are reasoning. default: no block.
+        closed, n_think, a_closed, n_analysis = None, 0, None, 0
         if req["mode"] == "think":
             closed = think_close_id in out_ids
             n_think = out_ids.index(think_close_id) + 1 if closed else len(out_ids)
-        else:
-            closed, n_think = None, 0
+        elif req["mode"] == "reinit":
+            k = prompts.tokens_through(lambda x: tok.decode(x, skip_special_tokens=False),
+                                       out_ids, prompts.ANALYSIS_CLOSE)
+            a_closed, n_analysis = k is not None, (k if k is not None else len(out_ids))
         checks = {
             "ids_source": ids_source,
             "server_text_matches_decode": resp.get("text") == text_for_check if "text" in resp else None,
@@ -225,7 +242,8 @@ def run_one(req: dict, base: str, tok, think_close_id: int, timeout: float) -> d
         return {
             "output_text": out_text, "output_token_ids": out_ids, "output_logprobs": lps,
             "finish_reason": finish, "n_output_tokens": len(out_ids), "n_think_tokens": n_think,
-            "think_closed": closed, "wall_time_s": round(wall, 3), "request_started_at": started,
+            "think_closed": closed, "n_analysis_tokens": n_analysis, "analysis_closed": a_closed,
+            "wall_time_s": round(wall, 3), "request_started_at": started,
             "server_text": None if checks["server_text_matches_decode"] in (True, None) else resp.get("text"),
             "sglang_meta": {k: v for k, v in meta.items() if k not in ("output_token_logprobs", "input_token_logprobs")},
             "response_checks": checks, "error": None,
@@ -234,12 +252,41 @@ def run_one(req: dict, base: str, tok, think_close_id: int, timeout: float) -> d
         return {
             "output_text": None, "output_token_ids": None, "output_logprobs": None,
             "finish_reason": None, "n_output_tokens": None, "n_think_tokens": None,
-            "think_closed": None, "wall_time_s": round(time.perf_counter() - t0, 3),
+            "think_closed": None, "n_analysis_tokens": None, "analysis_closed": None,
+            "wall_time_s": round(time.perf_counter() - t0, 3),
             "request_started_at": started, "server_text": None, "sglang_meta": None,
             "response_checks": None,
             "error": f"{type(e).__name__}: {e}",
             "error_traceback": traceback.format_exc(limit=3),
         }
+
+
+def probe_server(base: str, timeout_s: float) -> tuple[bool, str]:
+    """Stall guard probe: can the server still generate? /health_generate makes SGLang run a
+    one-token generation through its scheduler; /health is the fallback if that route doesn't
+    exist (it only shows that the HTTP front end is up). Returns (healthy, detail)."""
+    for route in ("/health_generate", "/health"):
+        try:
+            with urllib.request.urlopen(base + route, timeout=timeout_s) as r:
+                return r.status == 200, f"{route} -> HTTP {r.status}"
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue  # route not available in this SGLang version: try the next one
+            return False, f"{route} -> HTTP {e.code}"
+        except Exception as e:  # timeout, connection refused/reset
+            return False, f"{route} -> {type(e).__name__}: {e}"
+    return False, "no health route answered"
+
+
+def check_sglang_version(got: str | None, cfg: dict, run_id: str) -> None:
+    """Real runs must use the pinned engine version; smoke tests only warn."""
+    want = cfg["container"]["sglang_version"]
+    if got == want:
+        return
+    msg = f"SGLang version {got!r} != pinned [container] sglang_version {want!r}"
+    if run_id.startswith(PROTECTED_PREFIXES):
+        sys.exit(msg + f". Refusing to start {run_id!r} (fix the container or the config).")
+    print(f"[generate] WARNING: {msg} (allowed for a smoke test only)", flush=True)
 
 
 # ---------------------------------------------------------------- run metadata
@@ -318,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
     served = (facts.get("model_info") or {}).get("model_path")
     if served and served.rstrip("/").split("/")[-1] != cfg["model"]["name"].split("/")[-1]:
         sys.exit(f"Server is serving {served!r}, config expects {cfg['model']['name']!r}.")
+    check_sglang_version(facts.get("sglang_version"), cfg, args.run_id)
 
     run_dir = Path(args.runs_dir) / args.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -340,6 +388,8 @@ def main(argv: list[str] | None = None) -> int:
         "git": git_state(), "config_sha256": cfg["_meta"]["sha256"], "prompt_hash": prompts.PROMPT_HASH,
         "chat_template_sha256": cfg["model"]["chat_template_sha256"], "server_url": base,
         "server_wait_s": round(waited, 1), **facts, "pilot": args.pilot, "overrides": overrides,
+        "container": {"image": cfg["container"]["image"], "sif_path": os.environ.get("SGLANG_SIF"),
+                      "pinned_sglang_version": cfg["container"]["sglang_version"]},
         "n_questions": n_q, "samples_per_question": n_samples, "max_new_tokens": max_new,
         "concurrency": concurrency, "n_planned": n_planned, "n_already_done": n_planned - len(jobs),
         "n_to_send": len(jobs), "qids": [q["qid"] for q in selected],
@@ -353,10 +403,10 @@ def main(argv: list[str] | None = None) -> int:
               "sglang_version": facts.get("sglang_version"), "slurm_job_id": os.environ.get("SLURM_JOB_ID")}
     n_done = n_err = out_tokens = 0
 
-    def end_event(interrupted: bool) -> None:
+    def end_event(interrupted: bool, stalled: str | None = None) -> None:
         append_jsonl(run_dir / "run_meta.jsonl", {
             "event": "end", "time": utc_now(), "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
-            "interrupted": interrupted, "elapsed_s": round(time.time() - t_start, 1),
+            "interrupted": interrupted, "stalled": stalled, "elapsed_s": round(time.time() - t_start, 1),
             "n_written": n_done, "n_errors": n_err, "output_tokens": out_tokens})
 
     # Slurm sends SIGTERM at the time limit. Turn it into an exception in the main thread so the
@@ -373,29 +423,45 @@ def main(argv: list[str] | None = None) -> int:
         for q, s, m in jobs:
             req = build_request(q, s, m, tok, cfg, max_new)
             futures[pool.submit(run_one, req, base, tok, think_close_id, gen["request_timeout_s"])] = req
-        for fut in as_completed(futures):
-            req = futures[fut]
-            res = fut.result()
-            rec = {**static, **req, "n_input_tokens": len(req["input_token_ids"]), **res}
-            missing = [k for k in GENERATION_FIELDS if k not in rec]
-            assert not missing, f"record missing schema fields {missing}"  # programming error, not data
-            append_jsonl(log_path, rec)
-            n_done += 1
-            n_err += rec["error"] is not None
-            out_tokens += rec["n_output_tokens"] or 0
-            if n_done % PROGRESS_EVERY == 0 or n_done == len(jobs):
-                el = time.time() - t_start
-                print(f"[generate] {n_done}/{len(jobs)} done, {n_err} errors, {out_tokens} output tokens, "
-                      f"{el / 60:.1f} min, {out_tokens / max(el, 1e-9):.0f} tok/s", flush=True)
+        pending = set(futures)
+        while pending:
+            # Wait for the next finished request, but at most stall_check_s (the stall guard).
+            done, pending = wait(pending, timeout=gen["stall_check_s"], return_when=FIRST_COMPLETED)
+            if not done:
+                healthy, detail = probe_server(base, gen["stall_probe_timeout_s"])
+                quiet_min = gen["stall_check_s"] / 60
+                if healthy:
+                    print(f"[generate] no generation finished in {quiet_min:.0f} min, but the server still "
+                          f"generates ({detail}); {len(pending)} requests in flight, waiting", flush=True)
+                    continue
+                end_event(interrupted=True, stalled=detail)
+                print(f"[generate] STALLED: no generation finished in {quiet_min:.0f} min and the server "
+                      f"failed the probe ({detail}). Stopping after {n_done} records so the job doesn't "
+                      f"idle; re-run the same command to resume.", flush=True)
+                os._exit(EXIT_STALLED)  # in-flight requests may never return; don't wait for them
+            for fut in done:
+                req = futures[fut]
+                res = fut.result()
+                rec = {**static, **req, "n_input_tokens": len(req["input_token_ids"]), **res}
+                missing = [k for k in GENERATION_FIELDS if k not in rec]
+                assert not missing, f"record missing schema fields {missing}"  # programming error, not data
+                append_jsonl(log_path, rec)
+                n_done += 1
+                n_err += rec["error"] is not None
+                out_tokens += rec["n_output_tokens"] or 0
+                if n_done % PROGRESS_EVERY == 0 or n_done == len(jobs):
+                    el = time.time() - t_start
+                    print(f"[generate] {n_done}/{len(jobs)} done, {n_err} errors, {out_tokens} output tokens, "
+                          f"{el / 60:.1f} min, {out_tokens / max(el, 1e-9):.0f} tok/s", flush=True)
     except (Interrupted, KeyboardInterrupt):
         end_event(interrupted=True)
         print(f"[generate] interrupted after {n_done} records; re-run the same command to resume", flush=True)
-        os._exit(143)  # don't wait for in-flight HTTP requests (they may take an hour)
+        os._exit(EXIT_INTERRUPTED)  # don't wait for in-flight HTTP requests (they may take an hour)
     pool.shutdown()
     signal.signal(signal.SIGTERM, previous_handler)  # leave the process as we found it
     end_event(interrupted=False)
     print(f"[generate] finished: {n_done} written, {n_err} errors -> {log_path}", flush=True)
-    return 0 if n_err == 0 else 3  # non-zero exit makes errors visible in the Slurm job state
+    return 0 if n_err == 0 else EXIT_ERRORS  # non-zero exit makes errors visible in the Slurm job state
 
 
 if __name__ == "__main__":

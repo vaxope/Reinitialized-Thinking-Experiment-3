@@ -16,6 +16,10 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --output=runs/_slurm/%x_%j.out
+# The job reads and writes /projects (repo, runs, HF cache, container). NCSA asks jobs to
+# declare that, so they can be held or handled if /projects has problems (DeltaAI user guide,
+# "File System Dependency Specification for Jobs"). Charges are unaffected.
+#SBATCH --constraint=projects
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"   # Slurm starts the job in the directory sbatch was run from
 if [ -f scripts/deltaai/env.sh ]; then source scripts/deltaai/env.sh; fi

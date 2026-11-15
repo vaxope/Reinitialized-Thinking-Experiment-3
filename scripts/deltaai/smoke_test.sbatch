@@ -3,14 +3,14 @@
 #
 # Submit through submit.sh:   scripts/deltaai/submit.sh smoke
 # What it does, on 1 GPU, in a few minutes:
-#   1. starts SGLang and runs src/generate.py on 2 questions x 1 sample x 2 modes, with the
+#   1. starts SGLang and runs src/generate.py on 2 questions x 1 sample x 3 modes, with the
 #      output capped at SMOKE_MAX_NEW_TOKENS (default 4096) so it finishes fast. The cap is a
 #      test-only override; the run id starts with "smoke_" so it can never be mistaken for, or
 #      mixed into, a real run (generate.py refuses overrides for control_*/pilot_* ids).
 #   2. src/check_run.py: mechanical checks of every record (prompts rebuilt and compared,
-#      token ids, counts, finish reasons, think-token counting); FAIL -> job fails
-#   3. src/score.py: scores the 4 generations and prints the summary
-# Truncated think outputs are expected with the small cap and are only warnings.
+#      token ids, counts, finish reasons, think/analysis-token counting); FAIL -> job fails
+#   3. src/score.py: scores the 6 generations and prints the summary
+# Truncated think and reinit outputs are expected with the small cap and are only warnings.
 #SBATCH --job-name=gar-smoke
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -18,6 +18,10 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --output=runs/_slurm/%x_%j.out
+# The job reads and writes /projects (repo, runs, HF cache, container). NCSA asks jobs to
+# declare that, so they can be held or handled if /projects has problems (DeltaAI user guide,
+# "File System Dependency Specification for Jobs"). Charges are unaffected.
+#SBATCH --constraint=projects
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 if [ -f scripts/deltaai/env.sh ]; then source scripts/deltaai/env.sh; fi

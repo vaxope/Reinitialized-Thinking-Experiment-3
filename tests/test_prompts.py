@@ -92,3 +92,59 @@ def test_template_parity_with_real_tokenizer():
     for mode in prompts.MODES:
         rep = prompts.check_against_tokenizer(tok, mode, Q, opts)
         assert rep["match"] and rep["ids_match"], rep
+
+
+def test_reinit_prefix_is_thinking_off_plus_open_analysis():
+    t = prompts.build_text("reinit", Q, ["a", "b", "c", "d"])
+    assert t.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n<analysis>\n")
+    assert prompts.official_suffix("reinit") == "<analysis>\n"
+    assert prompts.official_suffix("think") == prompts.official_suffix("default") == ""
+    assert prompts.enable_thinking("reinit") is False
+
+
+def test_reinit_has_system_persona_and_others_do_not():
+    opts = ["a", "b", "c", "d"]
+    r = prompts.build_text("reinit", Q, opts)
+    assert r.startswith("<|im_start|>system\n" + prompts.REINIT_SYSTEM_PROMPT + "<|im_end|>\n<|im_start|>user\n")
+    for m in ("think", "default"):
+        assert prompts.build_text(m, Q, opts).startswith("<|im_start|>user\n")
+        assert prompts.system_text(m) is None
+    assert [m["role"] for m in prompts.build_messages(Q, opts, "reinit")] == ["system", "user"]
+
+
+def test_reinit_user_text_shares_question_block_and_answer_instruction():
+    opts = ["w", "x", "y", "z"]
+    shared = "Question: Which is largest?\n\nA) w\nB) x\nC) y\nD) z\n\n" + prompts.MCQ_FORMAT_INSTRUCTION
+    assert prompts.user_text(Q, opts, "reinit").endswith(shared)
+    assert prompts.user_text(Q, opts, "think").endswith(shared)
+    u = prompts.user_text(Q, opts, "reinit")
+    assert "<analysis></analysis>" in u and "After </analysis>, give your final choice." in u
+    assert "\u201c" not in u and "\u201d" not in u  # no curly quotes anywhere
+
+
+def test_tokens_through_finds_first_completion():
+    # fake tokenizer: each id is one character of the text
+    text = "abc</analysis>xyz</analysis>"
+    ids = list(range(len(text)))
+    decode = lambda xs: "".join(text[i] for i in xs)
+    assert prompts.tokens_through(decode, ids, "</analysis>") == len("abc</analysis>")
+    assert prompts.tokens_through(decode, ids[:5], "</analysis>") is None
+    assert prompts.tokens_through(decode, [], "</analysis>") is None
+
+
+def test_config_rejects_unknown_or_duplicate_modes():
+    import tempfile
+    from pathlib import Path
+    from src.config import DEFAULT_CONFIG
+    text = DEFAULT_CONFIG.read_text()
+    line = 'modes = ["think", "default", "reinit"]'
+    assert line in text
+    for bad in ('modes = ["think", "nothink"]', 'modes = ["think", "think"]', "modes = []"):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.toml"
+            p.write_text(text.replace(line, bad))
+            try:
+                load_config(p)
+            except ValueError:
+                continue
+            raise AssertionError(f"accepted {bad}")

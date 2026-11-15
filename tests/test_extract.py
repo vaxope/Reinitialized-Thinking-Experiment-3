@@ -78,3 +78,25 @@ def test_unknown_mode_rejected():
     except ValueError:
         return
     raise AssertionError("expected ValueError")
+
+
+def test_reinit_reads_only_after_analysis_close():
+    r = ex('step 1...\n"answer": "A"\n</analysis>\n\nfinal\n"answer": "D"', mode="reinit")
+    assert r["letter"] == "D" and r["n_answer_fields"] == 1 and r["rule"] == "last_answer_field"
+    assert r["analysis_closed"] is True and r["think_closed"] is None
+
+
+def test_reinit_unclosed_analysis_is_no_answer():
+    r = ex('step 1...\n"answer": "A"\nstill working', mode="reinit")
+    assert r["letter"] is None and r["rule"] == "unclosed_analysis" and r["analysis_closed"] is False
+
+
+def test_reinit_splits_at_first_close():
+    r = ex('a</analysis>\n"answer": "B"\n</analysis>\n"answer": "C"', mode="reinit")
+    assert r["letter"] == "C" and r["n_answer_fields"] == 2
+
+
+def test_reinit_ignores_think_close():
+    # </think> means nothing in reinit mode: only </analysis> splits.
+    r = ex('</think>\n"answer": "A"', mode="reinit")
+    assert r["rule"] == "unclosed_analysis"
