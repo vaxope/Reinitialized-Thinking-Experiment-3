@@ -130,7 +130,8 @@ sglang_version = "0.5.23"
 # SHA-256 of the .sif file itself. A .sif build is not byte-reproducible, so it can't be known in
 # advance: setup.sh computes and prints it; copy it here once. When set, setup.sh fails if the
 # .sif on disk differs (a swapped or re-pulled image). Empty = not recorded yet (warning only).
-sif_sha256 = ""
+# Recorded 2026-11-15 from setup.sh on DeltaAI (built by compute-node job 3610890, 12 GB).
+sif_sha256 = "2d5ffa3ae67c0e1cb72105ed6bae27f278fe4961174d35d1400769bdfa3af808"
 
 [server]
 # SGLang server settings, used by scripts/deltaai/serve_and_generate.sh and src/generate.py.
