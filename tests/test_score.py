@@ -110,3 +110,24 @@ def test_end_to_end_cli_and_overwrite_guard():
         except SystemExit:
             return
     raise AssertionError("expected refusal to overwrite")
+
+
+def test_lenient_beside_official_and_truncation_still_wrong():
+    r = rec("correct", "reinit")
+    gold = r["gold"]
+    r["output_text"] = f"analysis...\nAnswer: {gold}\n</think>\n\nanswer: {gold}"   # no </analysis>
+    out = score.score_record(r, CFG)
+    assert out["correct"] is False and out["lenient_correct"] is True and out["lenient_answer"] == gold
+    r["finish_reason"] = "length"
+    assert score.score_record(r, CFG)["lenient_correct"] is False
+
+
+def test_summary_has_lenient_accuracy():
+    recs = [score.score_record(rec(k, "reinit", qid=f"q{i}"), CFG) for i, k in enumerate(["correct", "wrong", "no_answer"])]
+    d = score.summarize_mode(recs, 0.95)
+    assert d["n_correct_lenient"] >= d["n_correct"] and "ci_lenient" in d
+
+
+def test_lenient_rule_name_in_config_matches_code():
+    from src import extract
+    assert CFG["scoring"]["lenient_rule"] == extract.LENIENT_RULE_NAME

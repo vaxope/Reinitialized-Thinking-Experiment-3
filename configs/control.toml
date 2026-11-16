@@ -171,6 +171,12 @@ mm_attention_backend = "triton_attn"
 # full control run; scoring reads saved outputs, so no regeneration was needed. Strict v2
 # accuracy is still reported beside it ("correct under strict v2").
 extraction_rule = "last_answer_field_v3"
+# Lenient reading reported BESIDE the official rule (user's choice 2026-11-16, after control_v1:
+# "if it gives an answer, count it"). Searches the whole output (no block rule) for any answer
+# shape (fields, <answer>X</answer>, choice lines, "the answer is X", a bare final letter);
+# full definition in src/extract.py. Never the official accuracy and never the training reward;
+# the gap to extraction_rule measures format failures. Truncated outputs stay wrong.
+lenient_rule = "any_answer_lenient_v1"
 # If true, a generation that hit max_new_tokens (finish_reason "length") is scored
 # wrong even if an "answer": "X" field happens to appear before the cut. Reason: a
 # truncated output did not finish; counting lucky partial answers would hide the

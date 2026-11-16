@@ -7,7 +7,8 @@ Inputs  : runs/<run>/generations.jsonl (schema: src/schema.py / CLAUDE.md "Loggi
           configs/control.toml [scoring] and [prompt].
 Outputs : in the same folder (or --out-dir):
           scored.jsonl  - each input record + extracted_answer, extraction_rule, correct,
-                          extraction_detail, outcome, truncated, scoring_rule_version
+                          extraction_detail, outcome, truncated, scoring_rule_version, and the
+                          lenient reading beside it: lenient_answer, lenient_correct, lenient_detail
           summary.json  - all metrics, machine-readable (the viewer can also recompute them)
           summary.md    - the same as a readable table
 Pipeline: (later) generate.py on DeltaAI -> copy back -> [score] -> viewer/index.html, vault note.
@@ -109,7 +110,18 @@ def score_record(rec: dict, cfg: dict) -> dict:
     else:
         outcome = "correct" if letter == rec.get("gold") else "wrong"
 
+    # Lenient reading (beside the official rule): any answer anywhere in the output. Same
+    # truncation and error handling as the official outcome.
+    if rec.get("error") or rec.get("output_text") is None:
+        lenient = {"letter": None, "rule": "generation_error", "n_answers": 0, "kind": None}
+    else:
+        lenient = extract.extract_lenient(rec["output_text"], n_opt)
+    lenient_ok = (lenient["letter"] is not None and lenient["letter"] == rec.get("gold")
+                  and not (truncated and cfg["scoring"]["truncated_counts_as_wrong"]))
     out.update({
+        "lenient_answer": lenient["letter"],
+        "lenient_correct": lenient_ok,
+        "lenient_detail": lenient,
         "extracted_answer": letter,          # what the extractor found (kept even if truncated)
         "extraction_rule": detail["rule"],   # which branch of the rule decided it
         "correct": outcome == "correct",
@@ -184,6 +196,13 @@ def summarize_mode(recs: list[dict], level: float) -> dict:
         ci, method = wilson_ci(n_correct, n, level), "wilson"
     else:
         ci, method = clustered_ci([statistics.fmean(v) for v in by_q.values()], level), "clustered_by_question"
+    # Lenient accuracy (beside the official one), same denominator and CI method.
+    n_len = sum(bool(r.get("lenient_correct")) for r in recs)
+    by_q_len = defaultdict(list)
+    for r in recs:
+        by_q_len[r.get("qid")].append(1.0 if r.get("lenient_correct") else 0.0)
+    ci_len = (wilson_ci(n_len, n, level) if max_samples <= 1
+              else clustered_ci([statistics.fmean(v) for v in by_q_len.values()], level))
 
     out_tok = [r.get("n_output_tokens") for r in recs]
     think_tok = [r.get("n_think_tokens") for r in recs]
@@ -200,6 +219,12 @@ def summarize_mode(recs: list[dict], level: float) -> dict:
         "n_correct": n_correct,
         "accuracy": n_correct / n if n else math.nan,  # denominator = ALL records, incl. errors/truncations
         "ci": list(ci), "ci_method": method, "ci_level": level,
+        "n_correct_lenient": n_len,
+        "accuracy_lenient": n_len / n if n else math.nan,
+        "ci_lenient": list(ci_len),
+        # Not truncated, no error, and still no answer of any shape.
+        "n_no_answer_lenient": sum(r.get("lenient_answer") is None and r["outcome"] not in ("truncated", "error")
+                                   for r in recs),
         "outcomes": dict(Counter(r["outcome"] for r in recs)),
         "extraction_rules": dict(Counter(r["extraction_rule"] for r in recs)),
         # Format failures: answered, but not in the requested "answer": "X" form.
@@ -273,7 +298,7 @@ def summarize(scored: list[dict], corrupt: list[dict], cfg: dict, source: str,
         "run_timing": timing,
         "missing_schema_fields": dict(schema),
         "unknown_modes": unknown_modes,
-        "scoring": {"rule": cfg["scoring"]["extraction_rule"],
+        "scoring": {"rule": cfg["scoring"]["extraction_rule"], "lenient_rule": cfg["scoring"]["lenient_rule"],
                     "truncated_counts_as_wrong": cfg["scoring"]["truncated_counts_as_wrong"],
                     "config_sha256": cfg["_meta"]["sha256"]},
         "per_mode": {m: summarize_mode([r for r in scored if r["mode"] == m], level) for m in modes},
@@ -301,6 +326,9 @@ def to_markdown(s: dict) -> str:
         "|---|" + "---|" * len(modes),
         row("accuracy", lambda d: f"{d['accuracy']:.3f} [{fmt(d['ci'][0], 3)}, {fmt(d['ci'][1], 3)}] ({d['ci_method']})"),
         row("correct / records", lambda d: f"{d['n_correct']} / {d['n_records']}"),
+        row(f"accuracy, lenient ({s['scoring'].get('lenient_rule', '–')}: any answer anywhere)",
+            lambda d: f"{d['accuracy_lenient']:.3f} [{fmt(d['ci_lenient'][0], 3)}, {fmt(d['ci_lenient'][1], 3)}] ({d['n_correct_lenient']} / {d['n_records']})" if "accuracy_lenient" in d else "–"),
+        row("no answer of any shape (lenient, not truncated)", lambda d: str(d.get("n_no_answer_lenient", "–"))),
         row("correct under strict v2 (\"answer\": \"X\" only)", lambda d: f"{d.get('n_correct_strict_v2', '–')} / {d['n_records']}"),
         row("questions × max samples", lambda d: f"{d['n_questions']} × {d['samples_per_question_max']}"),
         row("outcomes", lambda d: ", ".join(f"{k} {v}" for k, v in sorted(d["outcomes"].items()))),
@@ -352,6 +380,8 @@ def main(argv: list[str] | None = None) -> None:
     cfg = load_config(args.config) if args.config else load_config()
     if cfg["scoring"]["extraction_rule"] != extract.RULE_NAME:  # config and code must agree
         sys.exit(f"config rule {cfg['scoring']['extraction_rule']!r} != src/extract.py {extract.RULE_NAME!r}")
+    if cfg["scoring"]["lenient_rule"] != extract.LENIENT_RULE_NAME:
+        sys.exit(f"config lenient_rule {cfg['scoring']['lenient_rule']!r} != src/extract.py {extract.LENIENT_RULE_NAME!r}")
     src = Path(args.generations)
     out_dir = Path(args.out_dir) if args.out_dir else src.parent
     targets = [out_dir / n for n in ("scored.jsonl", "summary.json", "summary.md")]

@@ -133,3 +133,84 @@ def extract_answer(output_text: str | None, mode: str, n_options: int = 4) -> di
     if letter not in valid:
         return {"letter": None, "rule": "invalid_letter", **base}
     return {"letter": letter, "rule": "last_answer_field", **base}
+
+
+# ================================================================ lenient reading (beside v3)
+# Rule "any_answer_lenient_v1" (2026-11-16, user's choice after control_v1): "if the model gives
+# an answer, count it", even when it ignores the requested format. It is reported BESIDE v3,
+# never instead of it: v3 stays the official accuracy and the training reward. The gap between
+# the two is the cost of format failures (control_v1 reinit: 35% of outputs unreadable by v3).
+# Differences from v3:
+#   - No block rule: the WHOLE output is searched, so an answer written inside an <analysis>
+#     that was closed with </think> (or never closed) still counts. Truncated outputs are
+#     still wrong (src/score.py), because a cut-off output never reached a final answer.
+#   - More answer shapes (all need ONE capital letter; the last one in the output wins):
+#       field   : every v3 field (strict "answer": "X" and answer lines)
+#       tag     : any tag whose name/attributes contain "answer" or "choice": <answer>X</answer>,
+#                 <final_answer>X</final_answer>, <choice>X</choice>, <div class="answer">X</div>
+#       quoted  : the key "answer" then the letter in quotes, colon optional: answer"A", answer": "B"\
+#       key     : a choice/option line, e.g. choice: X, "choice": "X", Final choice: (X)
+#       phrase  : "the answer is X", "correct option is X", "Option X is correct", "I will select X";
+#                 IGNORED when the same line has "if", "whether", "suppose" or "assume" just
+#                 before it ("What if the answer is C?" is a hypothesis, not an answer)
+#       bare    : the LAST non-empty line is only the letter (C, **C**, (C)) after removing
+#                 trailing closing tags such as </analysis>
+#       option  : the LAST non-empty line repeats an option, "A) 14" or "(B) 3-bromo...": the
+#                 model answered by copying the option line (seen in default mode)
+#   - Still not counted: \boxed{X} (never seen in GPQA outputs) and lower-case letters
+#     ("a) 0.85"), which can't be told apart from list items.
+LENIENT_RULE_NAME = "any_answer_lenient_v1"
+LENIENT_TAG = re.compile(r"<[^<>\n]*(?i:answer|choice)[^<>\n]*>\s*[*(]*\s*([A-Z])\s*[*)]*\s*</")
+LENIENT_QUOTED = re.compile(r"""(?<![A-Za-z])(?i:answer)["'`*]*\s*[:=]?\s*["'`*]+([A-Z])["'`*]""")
+LENIENT_KEY = re.compile(
+    r"""(?m)(?<![A-Za-z])[`"'*]*(?i:(?:final\s+)?(?:choice|option))[`"'*]*[ \t]*:[`"'*( \t]*([A-Z])[`"'*)]*[ \t]*(?=$|<|[,}\]])""")
+# "answer is C", "correct option is (B)", "choice is: D" -- the letter must stand alone (not "A good").
+LENIENT_PHRASE = re.compile(
+    r"""(?i:answer|choice|option)\s+(?i:is)\s*:?\s*[*"'`(]*\s*(?:(?i:option|choice)\s+)?[*"'`(]*([A-Z])[*"'`)]*(?=[\s.,;:!)]|$)""")
+# "Option C is correct", "**Choice B** is the best answer"
+LENIENT_OPTION_IS = re.compile(
+    r"""(?i:option|choice)\s+[*"'`(]*([A-Z])[*"'`)]*\s+(?i:is)\s+(?i:the\s+)?(?i:correct|right|best|most)""")
+# "I will select D", "So I choose C", "I'll pick option B"
+LENIENT_SELECT = re.compile(r"""\b(?i:select|choose|pick)\s+(?:(?i:option|choice)\s+)?[*"'`(]*([A-Z])[*"'`)]*(?=[\s.,;:!)]|$)""")
+# A phrase answer is ignored if one of these words comes shortly before it on the same line.
+HYPOTHETICAL = re.compile(r"(?i)\b(?:if|whether|suppose|supposing|assume|assuming|unless|maybe|perhaps)\b")
+HYPOTHETICAL_WINDOW = 40   # characters looked back on the same line (covers "What if the correct answer is")
+LENIENT_BARE = re.compile(r"""^[`"'*( \t]*([A-Z])[`"'*). \t]*$""")
+LENIENT_OPTION_LINE = re.compile(r"""^[`"'* \t]*\(?([A-Z])\)\s*\S""")
+TRAILING_TAGS = re.compile(r"(?:\s*(?:</[a-z_]+>|<\|im_end\|>|```))+\s*$")
+
+
+def find_lenient(text: str) -> list[tuple[int, str, str]]:
+    """Every lenient answer in `text` as (position of the letter, letter, kind), in text order."""
+    found = {pos: (letter, "field") for pos, letter in find_fields(text)}
+    for kind, pat in (("tag", LENIENT_TAG), ("quoted", LENIENT_QUOTED), ("key", LENIENT_KEY),
+                      ("phrase", LENIENT_PHRASE), ("phrase", LENIENT_OPTION_IS), ("phrase", LENIENT_SELECT)):
+        for m in pat.finditer(text):
+            if kind == "phrase":
+                line_start = text.rfind("\n", 0, m.start()) + 1
+                before = text[max(line_start, m.start() - HYPOTHETICAL_WINDOW):m.start()]
+                if HYPOTHETICAL.search(before):
+                    continue
+            found.setdefault(m.start(1), (m.group(1), kind))
+    body = TRAILING_TAGS.sub("", text)
+    lines = body.rstrip().splitlines()
+    if lines:
+        for kind, pat in (("bare", LENIENT_BARE), ("option", LENIENT_OPTION_LINE)):
+            m = pat.match(lines[-1])
+            if m:
+                found.setdefault(len(body.rstrip()) - len(lines[-1]) + m.start(1), (m.group(1), kind))
+                break
+    return [(p, l, k) for p, (l, k) in sorted(found.items())]
+
+
+def extract_lenient(output_text: str | None, n_options: int = 4) -> dict:
+    """Apply rule any_answer_lenient_v1 (see the block comment above). Mode-independent."""
+    if not output_text or not output_text.strip():
+        return {"letter": None, "rule": "empty_output", "n_answers": 0, "kind": None}
+    hits = find_lenient(output_text)
+    if not hits:
+        return {"letter": None, "rule": "no_answer", "n_answers": 0, "kind": None}
+    _, letter, kind = hits[-1]
+    if letter not in string.ascii_uppercase[:n_options]:
+        return {"letter": None, "rule": "invalid_letter", "n_answers": len(hits), "kind": kind}
+    return {"letter": letter, "rule": "last_answer_anywhere", "n_answers": len(hits), "kind": kind}

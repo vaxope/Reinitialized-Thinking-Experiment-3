@@ -138,3 +138,55 @@ def test_reinit_ignores_think_close():
     # </think> means nothing in reinit mode: only </analysis> splits.
     r = ex('</think>\n"answer": "A"', mode="reinit")
     assert r["rule"] == "unclosed_analysis"
+
+
+# ---------------------------------------------------------------- lenient reading (beside v3)
+from src.extract import extract_lenient
+
+
+def test_lenient_counts_answers_v3_rejects():
+    # The control_v1 reinit failure shapes: closed with </think>, never closed, invented tag,
+    # answer inside the analysis, bare final letter, prose.
+    for s, want in [('analysis...\nAnswer: A\n</think>\n\nre-solve...\n\nanswer": "B"', "B"),
+                    ("steps...\nAnswer: D\n<answer>D</answer>", "D"),
+                    ('work...\nanswer": "A"\n</analysis>', "A"),
+                    ("work...\n\n**C**\n</analysis>", "C"),
+                    ("work...\n\nC", "C"),
+                    ("Therefore the answer is B.", "B"),
+                    ("Option C is correct.", "C"),
+                    ('done\nchoice: "D"</choice>', "D"),
+                    ("<final_answer>(A)</final_answer>", "A")]:
+        r = extract_lenient(s)
+        assert r["letter"] == want and r["rule"] == "last_answer_anywhere", (s, r)
+
+
+def test_lenient_still_rejects_non_answers():
+    for s in ["work...\na) 0.85", "\\boxed{B}", "answer: A good start", "the answer is b", "no letter here", "So **C**\n</analysis>"]:
+        assert extract_lenient(s)["letter"] is None, s
+    assert extract_lenient("")["rule"] == "empty_output" and extract_lenient(None)["rule"] == "empty_output"
+
+
+def test_lenient_last_answer_wins_and_invalid_letter():
+    assert extract_lenient("answer: A\nwait\nThe answer is C.")["letter"] == "C"
+    assert extract_lenient("answer: E")["rule"] == "invalid_letter"
+
+
+def test_lenient_accepts_everything_v3_accepts():
+    for s in ['"answer": "B"', "answer: B", 'answer": "B"', "**Answer:** B", 'answer": "B"</answer>']:
+        assert extract_lenient(s)["letter"] == extract_answer(s, "default")["letter"] == "B", s
+
+
+def test_lenient_ignores_hypotheticals_and_reads_final_answer():
+    # Both cases seen in control_v1: a hypothesis in the reasoning, then a final answer in an
+    # unusual shape. The final answer must win; the hypothesis must not count.
+    assert extract_lenient("If Option D is correct then...\n</analysis>\n\nanswer\nanswer\"A\"")["letter"] == "A"
+    assert extract_lenient("What if the answer is C (0.91c)?\nI will select D.\n\n<div class=\"answer\">D</div>")["letter"] == "D"
+    assert extract_lenient("Suppose the answer is B. Then x fails.")["letter"] is None
+    assert extract_lenient("<spananswer>D</answer>")["letter"] == "D"
+    assert extract_lenient('answer": "B"\\')["letter"] == "B"
+
+
+def test_lenient_counts_a_final_option_line():
+    assert extract_lenient("A) 14")["letter"] == "A"
+    assert extract_lenient("work...\n(B) 3-bromo-4'-fluoro-1,1'-biphenyl")["letter"] == "B"
+    assert extract_lenient("A) 14\nB) 15\nmore text")["letter"] is None   # not the last line
