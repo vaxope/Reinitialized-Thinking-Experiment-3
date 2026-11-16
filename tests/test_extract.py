@@ -21,12 +21,50 @@ def test_last_field_wins_after_self_correction():
     assert r["letter"] == "C" and r["n_answer_fields"] == 2
 
 
-def test_other_formats_are_not_accepted_but_counted_as_near_misses():
-    for s in ["Answer: B", "The answer is B.", "**Answer:** B", 'answer: "B"',
-              '"Answer": "B"', '"answer": "b"']:
-        r = ex(s)
+def test_v3_accepts_answer_lines_seen_in_pilot():
+    # Every final-line shape observed in pilot_v1 that names one letter after an `answer` key.
+    for s in ["answer: B", "Answer: B", 'answer: "B"', 'answer": "B"', '`answer": "B"`',
+              '`answer`: "B"', '`"answer": "B"`', "**Answer:** B", "Answer: **B**",
+              'answer": "B"</answer>', 'answer": "B"\n</solution>', "Final Answer: (B)",
+              "    Answer: B", 'answer: "answer": "B"', '```\nanswer": "B"\n```',
+              '"Answer": "B"', "answer: B\n</chain_of_thought>"]:
+        r = ex("work...\n\n" + s)
+        assert r["letter"] == "B" and r["rule"] == "last_answer_field", s
+
+
+def test_v3_still_rejects_prose_and_other_shapes():
+    for s in ["The answer is B.", "B", "A) B", "\\boxed{B}", "<answer>B</answer>", 'answer: "b"',
+              '"choice": "B"', "Answer: B because the energy is lower", "Therefore, **Option B** is right",
+              "answer = B", "ananswer: B"]:
+        r = ex("work...\n\n" + s)
         assert r["letter"] is None and r["rule"] == "no_answer_field", s
-        assert r["n_near_misses"] >= 1, s
+
+
+def test_v3_prose_counts_as_near_miss():
+    for s in ["The answer is B.", "Answer: B because the energy is lower", "answer = B"]:
+        assert ex(s)["n_near_misses"] >= 1, s
+
+
+def test_v3_answer_line_does_not_double_count_strict_field():
+    r = ex('"answer": "B"')
+    assert r["n_answer_fields"] == 1 and r["n_strict_fields"] == 1 and r["n_near_misses"] == 0
+
+
+def test_v3_last_field_wins_across_both_shapes():
+    assert ex('"answer": "A"\nWait, recheck.\nanswer: C')["letter"] == "C"
+    assert ex('answer: A\nWait.\n"answer": "D" is my final choice')["letter"] == "D"
+
+
+def test_strict_letter_reports_v2_decision():
+    assert ex("answer: C")["strict_letter"] is None
+    assert ex('"answer": "C"')["strict_letter"] == "C"
+    assert ex('"answer": "A"\nanswer: C')["strict_letter"] == "A"     # v2 would have picked A
+
+
+def test_v3_answer_line_inside_reasoning_block_is_ignored():
+    assert ex("answer: A\n</think>\nI am unsure.", mode="think")["rule"] == "no_answer_field"
+    assert ex("answer: A\nstill going", mode="reinit")["rule"] == "unclosed_analysis"
+    assert ex("x</think>\nanswer: A\n</analysis>\nanswer: D", mode="reinit")["letter"] == "D"
 
 
 def test_boxed_is_not_accepted():

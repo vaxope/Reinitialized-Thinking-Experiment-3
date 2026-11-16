@@ -16,7 +16,8 @@
   Rule 5  : GPQA text appears only because you load a local run file. Never publish this
             page with data embedded, and never commit run files.
 
-  Answer highlighting uses the same strict pattern as src/extract.py ("answer": "X").
+  Answer highlighting uses the same two patterns as src/extract.py rule v3 (the strict
+  "answer": "X" field and the answer line, e.g. answer: X).
   The reasoning/answer split mirrors src/extract.py: in think mode the text before the
   FIRST "</think>" is reasoning; in reinit mode the text before the FIRST "</analysis>";
   in default mode everything is visible. Correctness is
@@ -190,8 +191,17 @@ const OUTCOMES = {                                        // from src/score.py O
   unscored:  { label: "Unscored",  icon: "·", color: "var(--neutral)" },
 };
 const PAGE = 100;                                         // table rows per page (keeps the DOM small)
-// Same pattern as src/extract.py ANSWER_FIELD (used only for highlighting, never for scoring).
+// Same patterns as src/extract.py ANSWER_FIELD and ANSWER_LINE (rule v3; used only for
+// highlighting, never for scoring). JS has no inline (?i:...), so the key's case is spelled out.
 const ANSWER_FIELD = /"answer"\s*:\s*"([A-Z])"/g;
+const ANSWER_LINE = /(?<![A-Za-z])[`"'*]*[Aa][Nn][Ss][Ww][Ee][Rr][`"'*]*[ \t]*:[`"'*( \t]*([A-Z])[`"'*)]*[ \t]*(?=$|<|[,}\]])/gm;
+// All answer fields in text order; where the two patterns overlap, the one that starts first is kept.
+function answerFields(text) {
+  const all = [...text.matchAll(ANSWER_FIELD), ...text.matchAll(ANSWER_LINE)].sort((a, b) => a.index - b.index);
+  const out = [];
+  for (const m of all) if (!out.length || m.index >= out[out.length - 1].index + out[out.length - 1][0].length) out.push(m);
+  return out;
+}
 const THINK_CLOSE = "</think>";
 const ANALYSIS_CLOSE = "</analysis>";                     // src/prompts.ANALYSIS_CLOSE (reinit mode)
 // Per mode: the reasoning block's closing marker, its token-count field, and its label.
@@ -396,10 +406,10 @@ function splitOutput(r) {      // mirrors src/extract.split_output
   }
   return { reasoning: "", visible: t, closed: null };
 }
-// Visible text with every "answer": "X" field highlighted; the last one (what extract.py takes) emphasised.
+// Visible text with every answer field (rule v3) highlighted; the last one (what extract.py takes) emphasised.
 function highlighted(text) {
   const pre = el("pre", { class: "text" });
-  const ms = [...text.matchAll(ANSWER_FIELD)];
+  const ms = answerFields(text);
   let pos = 0;
   ms.forEach((m, i) => {
     const final = i === ms.length - 1;
@@ -428,7 +438,7 @@ function trajectory(r, compact) {
     const st = parts.closed === false ? "never closed: reasoning did not finish" : `${fmt(r[b.field])} tokens`;
     wrap.append(section(b.label, st, el("pre", { class: "text", text: parts.reasoning ?? "(no output)" }), !compact));
   }
-  const nAns = parts.visible ? [...parts.visible.matchAll(ANSWER_FIELD)].length : 0;
+  const nAns = parts.visible ? answerFields(parts.visible).length : 0;
   wrap.append(section(b ? `Visible answer (after ${b.close})` : "Output (all visible)",
     `${nAns} answer field(s)` + (!b && r.n_output_tokens != null ? ` · ${fmt(r.n_output_tokens)} tokens` : ""),
     parts.visible == null ? el("pre", { class: "text", text: "(no output)" }) : parts.visible === "" ? el("pre", { class: "text muted", text: "(empty)" }) : highlighted(parts.visible), true));

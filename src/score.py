@@ -94,8 +94,8 @@ def score_record(rec: dict, cfg: dict) -> dict:
     out = dict(rec)
     truncated = rec.get("finish_reason") == "length"  # hit max_new_tokens
     if rec.get("error") or rec.get("output_text") is None:
-        detail = {"letter": None, "rule": "generation_error", "n_answer_fields": 0,
-                  "n_near_misses": 0, "think_closed": None, "analysis_closed": None}
+        detail = {"letter": None, "rule": "generation_error", "n_answer_fields": 0, "n_strict_fields": 0,
+                  "strict_letter": None, "n_near_misses": 0, "think_closed": None, "analysis_closed": None}
     else:
         detail = extract.extract_answer(rec["output_text"], rec["mode"], n_opt)
     letter = detail["letter"]
@@ -203,6 +203,10 @@ def summarize_mode(recs: list[dict], level: float) -> dict:
         "outcomes": dict(Counter(r["outcome"] for r in recs)),
         "extraction_rules": dict(Counter(r["extraction_rule"] for r in recs)),
         # Format failures: answered, but not in the requested "answer": "X" form.
+        # Strict rule v2 for comparison: correct only if the strict "answer": "X" field was used
+        # (same truncation rule). Shows how much of the accuracy depends on the wider v3 fields.
+        "n_correct_strict_v2": sum(r["outcome"] == "correct"
+                                   and r["extraction_detail"].get("strict_letter") == r.get("gold") for r in recs),
         "n_near_miss_only": sum(r["extraction_rule"] == "no_answer_field"
                                 and r["extraction_detail"].get("n_near_misses", 0) > 0 for r in recs),
         # Letter bias check: the prompt's example is "C"; a model that over-picks C shows here.
@@ -297,6 +301,7 @@ def to_markdown(s: dict) -> str:
         "|---|" + "---|" * len(modes),
         row("accuracy", lambda d: f"{d['accuracy']:.3f} [{fmt(d['ci'][0], 3)}, {fmt(d['ci'][1], 3)}] ({d['ci_method']})"),
         row("correct / records", lambda d: f"{d['n_correct']} / {d['n_records']}"),
+        row("correct under strict v2 (\"answer\": \"X\" only)", lambda d: f"{d.get('n_correct_strict_v2', '–')} / {d['n_records']}"),
         row("questions × max samples", lambda d: f"{d['n_questions']} × {d['samples_per_question_max']}"),
         row("outcomes", lambda d: ", ".join(f"{k} {v}" for k, v in sorted(d["outcomes"].items()))),
         row("extraction rules", lambda d: ", ".join(f"{k} {v}" for k, v in sorted(d["extraction_rules"].items()))),

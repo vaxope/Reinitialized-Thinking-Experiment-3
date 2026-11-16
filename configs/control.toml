@@ -165,7 +165,12 @@ mm_attention_backend = "triton_attn"
 # record so a later rule change is visible in the data.
 # v2 (2026-11-15) = v1 + reinit mode (answer after the first </analysis>); think/default
 # are decided exactly as in v1.
-extraction_rule = "last_answer_field_v2"
+# v3 (2026-11-16, user's choice after pilot_v1) = v2 + answer LINES ("answer: C",
+# 'answer: "C"', 'answer": "C"', ...; full definition in src/extract.py). In pilot_v1 only 5/60
+# outputs used the strict form although nearly all ended with an answer line. Set before the
+# full control run; scoring reads saved outputs, so no regeneration was needed. Strict v2
+# accuracy is still reported beside it ("correct under strict v2").
+extraction_rule = "last_answer_field_v3"
 # If true, a generation that hit max_new_tokens (finish_reason "length") is scored
 # wrong even if an "answer": "X" field happens to appear before the cut. Reason: a
 # truncated output did not finish; counting lucky partial answers would hide the

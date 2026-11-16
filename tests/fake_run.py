@@ -38,7 +38,7 @@ def make_record(qid: str, sample_idx: int, mode: str, kind: str, cfg: dict, rng:
     elif kind == "wrong":
         visible = f'{answer_body}\n\n```json\n{{"answer": "{wrong_letter}"}}\n```'
     elif kind == "no_answer":
-        visible = f"{answer_body}\n\nAnswer: {gold}"  # wrong format: a near miss
+        visible = f"{answer_body}\n\nThe answer is {gold}."  # prose, not a field: a near miss
     elif kind == "truncated":
         visible, finish = None, "length"
     elif kind == "error":
