@@ -1,0 +1,71 @@
+# configs/train_data.toml: every parameter of the GRPO training-data build (src/train_data.py).
+#
+# Pipeline: pinned SuperGPQA jsonl --[src/train_data.py, this file]--> data/train/
+#           (train + validation files in the gpqa_diamond.jsonl record shape, + manifest)
+#           --> later: difficulty filter (base-model pass rate) --> slime training.
+# Each value: meaning | value | source | reason. Changing any value after training has
+# started means a new data version (bump [output] dir) so results stay traceable.
+# Decided by the user 2026-11-15: SuperGPQA, Science -> Physics/Chemistry/Biology, cut to
+# 4 options with seeded random distractors, validation 100 per field.
+
+[source]
+# Hugging Face dataset repo | m-a-p/SuperGPQA | the authors' release | licence ODC-BY
+# (attribution required; the README asks to credit the referenced datasets too).
+hf_repo = "m-a-p/SuperGPQA"
+# The one data file in the repo (all 26,529 questions; the repo has a single "train" split).
+hf_file = "SuperGPQA-all.jsonl"
+# Dataset commit | HfApi().dataset_info("m-a-p/SuperGPQA").sha on 2026-11-15 | pinning makes
+# a re-download byte-identical.
+hf_revision = "4430d4458112c7d4497fdcf94d7cc223313d6acf"
+# SHA-256 of that file | computed locally 2026-11-15; equals the LFS hash Hugging Face
+# publishes for it | src/train_data.py refuses any other file.
+file_sha256 = "28b998e70205ee95e540317b5adc06a06552a3961fb50b153df126b833f7a910"
+# Where the downloaded file lives (gitignored data/). Downloaded here if missing (public,
+# no token needed).
+local_path = "data/supergpqa/SuperGPQA-all.jsonl"
+# Expected row count | GitHub README statistics table (26,529) | sanity check.
+n_rows = 26529
+
+[filter]
+# Keep rows with exactly this discipline label... | dataset's own labels | the user's
+# request (physics, chemistry, biology). Exact match, no keyword search.
+discipline = "Science"
+# ...and one of these field labels. These names occur only under "Science" (checked
+# 2026-11-15). Related fields elsewhere (Astronomy, Chemical Engineering, Basic Medicine,
+# Pharmacy, ...) are deliberately excluded. Order = order in reports.
+fields = ["Physics", "Chemistry", "Biology"]
+
+[options]
+# Options per training question | 4 | GPQA Diamond format | so prompts.py, extract.py and
+# the reward work unchanged and training looks like evaluation (user's choice).
+n_options = 4
+# Salt for choosing which wrong options survive. Seed string = "<salt>|<uuid>". Fixed
+# label; its only job is to be fixed and recorded. Changing it = a new data version.
+distractor_salt = "supergpqa-distractors-v1"
+
+[decontam]
+# GPQA Diamond questions to check against (built by src/data.py; never trained on).
+gpqa_path = "data/gpqa_diamond.jsonl"
+# Drop a training question if it shares any run of this many consecutive normalised
+# words with a GPQA question, or matches one exactly | 13 | the common n-gram length for
+# benchmark-contamination checks (e.g. GPT-3 paper) | 8 words already catches generic
+# phrases (checked 2026-11-15: 3 generic phrases, 0 hits at 13).
+ngram_drop = 13
+# Shorter n-gram length reported for human review only (uuid + GPQA qid, never text).
+ngram_review = 8
+
+[split]
+# Validation questions per field | 100 (300 total) | user's choice 2026-11-15 | about +-2.8
+# accuracy points (1 SE at ~40%, 1 sample each), equal precision per field, ~5% of data.
+val_per_field = 100
+# Salt for the split. A question goes to validation if its sha256("<salt>|<uuid>") ranks
+# in the first val_per_field of its field. Independent of file order.
+split_salt = "supergpqa-split-v1"
+
+[output]
+# Output folder (gitignored data/). The "v1" is the data version: bump it if anything
+# above changes.
+dir = "data/train/supergpqa_pcb_v1"
+train_file = "train.jsonl"
+val_file = "val.jsonl"
+manifest_file = "manifest.json"
