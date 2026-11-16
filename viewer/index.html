@@ -11,6 +11,11 @@
               runs/<run>/scored.jsonl      (from src/score.py; has outcome/correct)  <- preferred
               runs/<run>/generations.jsonl (raw; shown as "unscored")
             Nothing is uploaded anywhere: the file is read by this page in your browser.
+            Large files (a full control run is ~1 GB) are read in chunks, one record at a
+            time, so no single string has to hold the whole file (Chrome caps one string at
+            ~512 MB). For files over LP_SKIP_ABOVE_MB, output_logprobs (~80% of a record's
+            size) are dropped while reading unless "Keep logprobs" is ticked; their summary
+            (count, mean, min) is computed before dropping, so it is still shown.
   Output  : none (read-only).
   Pipeline: generate (DeltaAI, later) -> src/score.py -> scored.jsonl -> [viewer]
   Rule 5  : GPQA text appears only because you load a local run file. Never publish this
@@ -148,6 +153,7 @@ mark.ans.final { background: var(--hl-final); outline: 1px solid var(--warning);
   <h1>Trajectory viewer <span class="muted" id="loaded" style="font-weight:400"></span></h1>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <label class="muted" style="font-size:13px"><input type="file" id="file" accept=".jsonl,.json,.txt" multiple style="max-width:240px"></label>
+    <label class="muted" style="font-size:13px" title="Files over 200 MB load without per-token logprobs unless this is ticked (needs a lot of memory)"><input type="checkbox" id="keep-lp"> Keep logprobs (large files)</label>
     <button id="theme" title="Toggle light/dark">◐ Theme</button>
   </div>
 </header>
@@ -191,6 +197,11 @@ const OUTCOMES = {                                        // from src/score.py O
   unscored:  { label: "Unscored",  icon: "·", color: "var(--neutral)" },
 };
 const PAGE = 100;                                         // table rows per page (keeps the DOM small)
+// Files larger than this load without output_logprobs unless "Keep logprobs" is ticked.
+// 200 MB: the pilot (60 records) is 25 MB and loads whole; a full run (~2,400 records, ~1 GB)
+// would need several GB of browser memory with logprobs, which is ~80% of each record.
+const LP_SKIP_ABOVE_MB = 200;
+const PROGRESS_EVERY = 50;                                // update the loading message every N records
 // Same patterns as src/extract.py ANSWER_FIELD and ANSWER_LINE (rule v3; used only for
 // highlighting, never for scoring). JS has no inline (?i:...), so the key's case is spelled out.
 const ANSWER_FIELD = /"answer"\s*:\s*"([A-Z])"/g;
@@ -244,16 +255,54 @@ $("theme").onclick = () => {
 };
 
 // ---------------------------------------------------------------- loading
+// BEGIN jsonlLines (tests/test_viewer.py runs this block in Node)
+// Yield [lineNumber, text] for each line of a byte stream, decoding UTF-8 across chunk
+// boundaries (TextDecoderStream keeps a split multi-byte character until its rest arrives).
+async function* jsonlLines(byteStream) {
+  const reader = byteStream.pipeThrough(new TextDecoderStream("utf-8")).getReader();
+  let buf = "", lineNo = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += value;
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      lineNo++;
+      yield [lineNo, buf.slice(0, nl).replace(/\r$/, "")];
+      buf = buf.slice(nl + 1);
+    }
+  }
+  if (buf.length) yield [lineNo + 1, buf.replace(/\r$/, "")];   // last line without a final newline
+}
+// Summary of a record's logprobs, computed once (before they may be dropped).
+function logprobStats(lps) {
+  const lp = (lps || []).map(x => Array.isArray(x) ? x[0] : x).filter(x => typeof x === "number");
+  if (!lp.length) return null;
+  let sum = 0, min = Infinity;
+  for (const x of lp) { sum += x; if (x < min) min = x; }   // no Math.min(...lp): 80k args overflow the stack
+  return { n: lp.length, mean: sum / lp.length, min };
+}
+// END jsonlLines
+
 async function loadFiles(fileList) {
+  $("drop").hidden = false;
   for (const f of fileList) {
-    const text = await f.text();
-    let n = 0;
-    text.split("\n").forEach((line, i) => {
-      if (!line.trim()) return;
-      try { const r = JSON.parse(line); r._file = f.name; r._line = i + 1; RECORDS.push(r); n++; }
-      catch (e) { PROBLEMS.push(`${f.name} line ${i + 1}: not valid JSON (${e.message})`); }  // reported, not dropped silently
-    });
+    const mb = f.size / 1048576;
+    const dropLp = mb > LP_SKIP_ABOVE_MB && !$("keep-lp").checked;
+    let n = 0, dropped = 0;
+    for await (const [i, line] of jsonlLines(f.stream())) {
+      if (!line.trim()) continue;
+      let r;
+      try { r = JSON.parse(line); }
+      catch (e) { PROBLEMS.push(`${f.name} line ${i}: not valid JSON (${e.message})`); continue; }  // reported, not dropped silently
+      r._file = f.name; r._line = i;
+      r._lp_stats = logprobStats(r.output_logprobs);
+      if (dropLp && r.output_logprobs) { delete r.output_logprobs; r._lp_dropped = true; dropped++; }
+      RECORDS.push(r); n++;
+      if (n % PROGRESS_EVERY === 0) $("drop").textContent = `Loading ${f.name} (${mb.toFixed(0)} MB): ${n} records…`;
+    }
     FILES.push(`${f.name} (${n})`);
+    if (dropped) PROBLEMS.push(`${f.name} is ${mb.toFixed(0)} MB, so per-token logprobs were not kept for ${dropped} records (their count/mean/min still show). Tick "Keep logprobs" and reload to see them.`);
   }
   const unscored = RECORDS.filter(r => !r.outcome).length;
   if (unscored) PROBLEMS.push(`${unscored} records are unscored (raw generations). Run "python3 -m src.score <file>" and load scored.jsonl to see correctness.`);
@@ -282,6 +331,8 @@ function stats(rs) {
   const th = rs.map(r => r.mode === "reinit" ? r.n_analysis_tokens : r.n_think_tokens).filter(v => typeof v === "number");
   return { n: rs.length, oc, qs: new Set(rs.map(r => r.qid)).size,
     scored: rs.filter(r => r.outcome).length, correct: rs.filter(r => r.correct === true).length,
+    // Lenient reading (score.py, beside the official rule); absent in files scored before 2026-11-16.
+    hasLenient: rs.some(r => "lenient_correct" in r), lenient: rs.filter(r => r.lenient_correct === true).length,
     outMean: mean(out), outMed: med(out), outTotal: out.reduce((s, x) => s + x, 0),
     thinkMean: mean(th), wtMed: med(wt), wtTotal: wt.reduce((s, x) => s + x, 0) };
 }
@@ -297,6 +348,7 @@ function renderTiles() {
         el("span", { class: "muted", style: "font-weight:400", text: `· ${s.n} records · ${s.qs} questions` })),
       el("div", { class: "stats" },
         stat(s.scored ? pct(acc) : "–", "accuracy", s.scored ? `${s.correct} / ${s.n} correct` : "unscored"),
+        stat(s.hasLenient ? pct(s.lenient / s.n) : "–", "lenient accuracy", s.hasLenient ? `${s.lenient} / ${s.n}: any answer anywhere` : "not in this file (rescore)"),
         stat(fmt(s.outMean), "mean output tokens", `median ${fmt(s.outMed)} · total ${fmt(s.outTotal)}`),
         stat(fmt(s.thinkMean), m === "reinit" ? "mean analysis tokens" : "mean think tokens", m === "default" ? "empty think block" : m === "reinit" ? "thinking off; reasoning in <analysis>" : ""),
         stat(pct((s.oc.truncated || 0) / s.n), "truncated", `${s.oc.truncated || 0} hit the token limit`),
@@ -369,7 +421,7 @@ function readHash() {
 // ---------------------------------------------------------------- table
 const COLS = [
   ["qid", "Question id"], ["sample_idx", "Sample", "num"], ["mode", "Mode"], ["gold", "Gold"],
-  ["extracted_answer", "Extracted"], ["outcome", "Outcome"], ["extraction_rule", "Rule"], ["finish_reason", "Finish"],
+  ["extracted_answer", "Extracted"], ["lenient_answer", "Lenient"], ["outcome", "Outcome"], ["extraction_rule", "Rule"], ["finish_reason", "Finish"],
   ["n_output_tokens", "Out tok", "num"], ["_reason", "Reason tok", "num"], ["wall_time_s", "Time s", "num"],
 ];
 function renderTable() {
@@ -384,6 +436,7 @@ function renderTable() {
       el("td", { class: "mono", text: r.qid }), el("td", { class: "num", text: r.sample_idx }),
       el("td", {}, el("span", { class: "modetag" }, el("span", { class: "swatch", style: `background:${modeColor(r.mode)}` }), r.mode)),
       el("td", { class: "mono", text: r.gold ?? "–" }), el("td", { class: "mono", text: r.extracted_answer ?? "–" }),
+      el("td", { class: "mono", title: "lenient reading: any answer anywhere", text: r.lenient_answer == null ? "–" : r.lenient_answer + (r.lenient_correct ? " ✓" : " ✗") }),
       el("td", {}, badge(outcomeOf(r))), el("td", { class: "muted", text: r.extraction_rule ?? "–" }),
       el("td", { text: String(r.finish_reason) }), el("td", { class: "num", text: fmt(r.n_output_tokens) }),
       el("td", { class: "num", text: fmt(reasonTok(r)) }), el("td", { class: "num", text: fmt(r.wall_time_s, 1) }));
@@ -451,12 +504,12 @@ function trajectory(r, compact) {
   return wrap;
 }
 function logprobSummary(r) {
-  const lp = (r.output_logprobs || []).map(x => Array.isArray(x) ? x[0] : x).filter(x => typeof x === "number");
-  if (!lp.length) return "none";
-  const mean = lp.reduce((s, x) => s + x, 0) / lp.length;
-  return `${lp.length} tokens · mean ${mean.toFixed(3)} · min ${Math.min(...lp).toFixed(2)}`;
+  const st = r._lp_stats !== undefined ? r._lp_stats : logprobStats(r.output_logprobs);
+  const base = st ? `${st.n} tokens · mean ${st.mean.toFixed(3)} · min ${st.min.toFixed(2)}` : "none";
+  return r._lp_dropped ? base + " · per-token values not loaded (large file)" : base;
 }
 function logprobTable(r) {
+  if (r._lp_dropped) return el("p", { class: "muted", text: 'Not loaded: this file is over the size limit. Tick "Keep logprobs" at the top and load the file again.' });
   const LIMIT = 3000;   // rendering 30k rows would freeze the page; the raw JSON has everything
   const rows = (r.output_logprobs || []).slice(0, LIMIT);
   const t = el("table", { class: "lp" }, el("thead", {}, el("tr", {}, el("th", { text: "#" }), el("th", { text: "logprob" }), el("th", { text: "token id" }), el("th", { text: "text" }))),
@@ -480,6 +533,7 @@ function metaGrid(r) {
   const sp = r.sampling_params ? Object.entries(r.sampling_params).map(([k, v]) => `${k}=${v}`).join(", ") : null;
   return el("div", { class: "meta" },
     item("gold / extracted", `${r.gold ?? "–"} / ${r.extracted_answer ?? "–"}`), item("extraction rule", r.extraction_rule),
+    item("lenient answer", "lenient_answer" in r ? `${r.lenient_answer ?? "none"}${r.lenient_detail?.kind ? " (" + r.lenient_detail.kind + ")" : ""} · ${r.lenient_correct ? "correct" : "not correct"}` : null),
     item("finish reason", r.finish_reason), item("output / think / analysis tokens", `${fmt(r.n_output_tokens)} / ${fmt(r.n_think_tokens)} / ${fmt(r.n_analysis_tokens)}`),
     item("input tokens", fmt(r.n_input_tokens)), item("wall time", r.wall_time_s == null ? null : fmt(r.wall_time_s, 2) + " s"),
     item("option order", JSON.stringify(r.option_order)), item("seed", r.seed), item("run", r.run_id),
