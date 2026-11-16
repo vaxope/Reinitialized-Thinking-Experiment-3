@@ -141,6 +141,15 @@ port = 30000
 # Server-side random seed. Note: with batching on a GPU, token-level sampling is not
 # bit-reproducible across runs anyway; the seed is recorded so the setup is fully stated.
 random_seed = 0
+# Attention kernel library SGLang uses for the model's full-attention layers (passed as
+# --attention-backend; Qwen3.5's linear-attention layers use their own kernels). Set
+# explicitly instead of SGLang's automatic choice: on the GH200 (Hopper) SGLang picks FA3,
+# whose compiled part (sgl_kernel.flash_ops) is missing from the arm64 v0.5.23 image, so the
+# server crashed at startup (smoke job 3611059, 2026-11-15). flashinfer 0.7.2 is in the image
+# with prebuilt sm90a kernels (flashinfer-jit-cache-sm90a). The backend changes GPU arithmetic
+# slightly, so it is pinned here for every run, baseline and trained alike. generate.py
+# refuses pilot/control runs if the server reports a different backend. Fallback: "triton".
+attention_backend = "flashinfer"
 
 [scoring]
 # Name/version of the extraction rule in src/extract.py; written into every scored

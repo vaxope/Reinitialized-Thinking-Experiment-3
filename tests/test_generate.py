@@ -226,3 +226,39 @@ def test_pinned_sglang_version_enforced_for_real_runs():
             assert not (Path(tmp) / "runs" / "pilot_versiontest").exists()  # refused before the run dir
             return
         raise AssertionError("expected refusal")
+
+
+def test_attention_backend_pinned_for_real_runs():
+    # Pure check, no server: pilot/control runs need the server's backend to equal the config;
+    # a missing field is refused too; smoke runs only warn.
+    from src import generate
+    from src.config import load_config
+    cfg = load_config()
+    want = cfg["server"]["attention_backend"]
+    assert want == "flashinfer"
+    generate.check_attention_backend({"attention_backend": want}, cfg, "pilot_x")  # passes
+    generate.check_attention_backend({"attention_backend": "fa3"}, cfg, "smoke_x")  # warns only
+    for bad in ({"attention_backend": "fa3"}, {}):
+        for run_id in ("pilot_x", "control_x"):
+            try:
+                generate.check_attention_backend(bad, cfg, run_id)
+            except SystemExit as e:
+                assert "attention_backend" in str(e) and "Refusing" in str(e)
+                continue
+            raise AssertionError(f"expected refusal for {bad} / {run_id}")
+
+
+def test_fake_server_reports_attention_backend():
+    # The serve script passes --attention-backend; the fake server reports it back the way
+    # real SGLang's /get_server_info does, so generate.py can record and check it.
+    if not _have_transformers():
+        return "SKIP: transformers not installed"
+    from src import generate
+    with FakeServer("--attention-backend", "flashinfer") as srv:
+        facts = {}
+        for _ in range(200):
+            facts = generate.server_facts(srv.url)
+            if "server_args" in facts:
+                break
+            time.sleep(0.05)
+        assert facts["server_args"]["attention_backend"] == "flashinfer"

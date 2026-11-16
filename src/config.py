@@ -28,7 +28,7 @@ REQUIRED = {
                    "pilot_samples_per_question", "concurrency", "request_timeout_s",
                    "server_wait_timeout_s", "stall_check_s", "stall_probe_timeout_s"],
     "container": ["image", "image_digest_arm64", "sglang_version", "sif_sha256"],
-    "server": ["host", "port", "random_seed"],
+    "server": ["host", "port", "random_seed", "attention_backend"],
     "scoring": ["extraction_rule", "truncated_counts_as_wrong", "ci_level"],
 }
 

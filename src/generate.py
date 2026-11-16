@@ -117,7 +117,7 @@ def server_facts(base: str) -> dict:
             facts["sglang_version"] = info.get("version", "unknown")
             facts["server_args"] = {k: info.get(k) for k in (
                 "model_path", "revision", "dtype", "context_length", "mem_fraction_static",
-                "random_seed", "max_running_requests", "tp_size") if k in info}
+                "random_seed", "max_running_requests", "tp_size", "attention_backend") if k in info}
             break
         except Exception as e:
             facts["server_info_error"] = repr(e)
@@ -289,6 +289,22 @@ def check_sglang_version(got: str | None, cfg: dict, run_id: str) -> None:
     print(f"[generate] WARNING: {msg} (allowed for a smoke test only)", flush=True)
 
 
+def check_attention_backend(server_args: dict, cfg: dict, run_id: str) -> None:
+    """Real runs must use the configured attention backend; smoke tests only warn.
+
+    The server reports its backend in /get_server_info. If the field is missing (another
+    SGLang version), a real run is refused too: an unverified backend is not a pinned one.
+    """
+    want, got = cfg["server"]["attention_backend"], server_args.get("attention_backend")
+    if got == want:
+        print(f"[generate] attention backend {got!r} = config", flush=True)
+        return
+    msg = f"server attention backend {got!r} != [server] attention_backend {want!r}"
+    if run_id.startswith(PROTECTED_PREFIXES):
+        sys.exit(msg + f". Refusing to start {run_id!r} (fix the server flags or the config).")
+    print(f"[generate] WARNING: {msg} (allowed for a smoke test only)", flush=True)
+
+
 # ---------------------------------------------------------------- run metadata
 def git_state() -> dict:
     def git(*a):
@@ -366,6 +382,7 @@ def main(argv: list[str] | None = None) -> int:
     if served and served.rstrip("/").split("/")[-1] != cfg["model"]["name"].split("/")[-1]:
         sys.exit(f"Server is serving {served!r}, config expects {cfg['model']['name']!r}.")
     check_sglang_version(facts.get("sglang_version"), cfg, args.run_id)
+    check_attention_backend(facts.get("server_args", {}), cfg, args.run_id)
 
     run_dir = Path(args.runs_dir) / args.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
