@@ -18,7 +18,12 @@ PYTHON="${PYTHON:-python3}"
 if [ -z "${CONTAINER_EXEC+x}" ]; then
   : "${SGLANG_SIF:?SGLANG_SIF is not set (path to the SGLang .sif image)}"
   : "${HF_HOME:?HF_HOME is not set (Hugging Face cache directory)}"
-  CONTAINER=(apptainer exec --nv --bind "$REPO_DIR" --bind "$HF_HOME" "$SGLANG_SIF")
+  # DeltaAI (HPE Cray) sets CC=cc and CXX=CC for its own compiler wrappers, and Apptainer passes
+  # the host environment into the container, where those wrappers don't exist. SGLang's kernel
+  # builder links with $CXX, so startup failed with "CC: not found" (smoke job 3611226). Point
+  # both at the container's own compilers (/usr/bin/gcc, /usr/bin/g++). This changes how
+  # kernels are built, not what they compute.
+  CONTAINER=(apptainer exec --nv --env CC=gcc,CXX=g++ --bind "$REPO_DIR" --bind "$HF_HOME" "$SGLANG_SIF")
 else
   read -r -a CONTAINER <<< "$CONTAINER_EXEC"
 fi
