@@ -150,6 +150,15 @@ random_seed = 0
 # slightly, so it is pinned here for every run, baseline and trained alike. generate.py
 # refuses pilot/control runs if the server reports a different backend. Fallback: "triton".
 attention_backend = "flashinfer"
+# Attention kernel for the model's VISION encoder (passed as --mm-attention-backend).
+# Qwen3.5-2B is multimodal; SGLang builds and warms up its vision tower at startup even
+# though our prompts are text-only, and on Hopper it auto-picks FA3 for it -> the same
+# missing sgl_kernel FA3 module crashed startup (smoke job 3611286, 2026-11-15). Source:
+# sglang v0.5.23 layers/attention/vision.py _determine_attention_backend. "triton_attn" is
+# SGLang's own default on CUDA GPUs other than Hopper/Blackwell, so it is a well-used path;
+# alternative "sdpa" (PyTorch). Text-only requests never run the vision tower, so this
+# cannot change any output; pinned and checked for the same reason as attention_backend.
+mm_attention_backend = "triton_attn"
 
 [scoring]
 # Name/version of the extraction rule in src/extract.py; written into every scored

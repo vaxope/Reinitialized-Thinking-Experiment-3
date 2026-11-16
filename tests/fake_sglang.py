@@ -72,7 +72,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/get_server_info", "/server_info"):
             return self._send(200, {"version": "fake-sglang", "model_path": a.model_path, "revision": a.revision,
                                     "dtype": a.dtype, "random_seed": a.random_seed,
-                                    "attention_backend": a.attention_backend})
+                                    "attention_backend": a.attention_backend,
+                                    "mm_attention_backend": a.mm_attention_backend})
         if self.path == "/get_model_info":
             return self._send(200, {"model_path": a.model_path, "is_generation": True})
         return self._send(404, {"error": f"no route {self.path}"})
@@ -118,6 +119,7 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=30000)
     ap.add_argument("--random-seed", type=int, default=0)
     ap.add_argument("--attention-backend", default=None)  # reported back, like real SGLang
+    ap.add_argument("--mm-attention-backend", default=None)
     ap.add_argument("--fake-error-every", type=int, default=0)
     ap.add_argument("--fake-latency-s", type=float, default=0.01)
     ap.add_argument("--fake-hang-after", type=int, default=0, help="hang every /generate after the N-th")

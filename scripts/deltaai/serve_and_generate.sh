@@ -8,7 +8,7 @@
 # Steps:
 #   1. print the environment (node, GPU, container, package versions) into the job log
 #   2. start the SGLang server in the background, inside the container, with the model,
-#      revision, dtype, host, port, seed and attention backend from configs/control.toml; its log goes to
+#      revision, dtype, host, port, seed and attention backends from configs/control.toml; its log goes to
 #      runs/_server_logs/
 #   3. wait until GET /health answers (or fail fast if the server process dies)
 #   4. run src/generate.py (it re-checks health, template hash and parity, then generates)
@@ -34,12 +34,12 @@ SERVER_LOG="runs/_server_logs/sglang_${SLURM_JOB_ID:-local}_$(date +%Y%m%d_%H%M%
 for _ in $(seq 1 100); do port_free "$PORT" && break; echo "[serve] port $PORT busy, trying $((PORT + 1))"; PORT=$((PORT + 1)); done
 port_free "$PORT" || { echo "[serve] ERROR: no free port found"; exit 1; }
 
-echo "[serve] starting $SERVER_MODULE: $MODEL @ $REVISION ($DTYPE, attention backend $ATTN_BACKEND) on $HOST:$PORT, log $SERVER_LOG"
+echo "[serve] starting $SERVER_MODULE: $MODEL @ $REVISION ($DTYPE, attention backend $ATTN_BACKEND, vision $MM_ATTN_BACKEND) on $HOST:$PORT, log $SERVER_LOG"
 # SERVER_EXTRA_ARGS: optional extra SGLang flags (e.g. --mem-fraction-static 0.85); unquoted
 # on purpose so it splits into separate arguments. run_exec makes $! the server's own pid.
 # shellcheck disable=SC2086
 run_exec "$PYTHON" -m "$SERVER_MODULE" --model-path "$MODEL" --revision "$REVISION" --dtype "$DTYPE" \
-    --host "$HOST" --port "$PORT" --random-seed "$SEED" --attention-backend "$ATTN_BACKEND" ${SERVER_EXTRA_ARGS:-} \
+    --host "$HOST" --port "$PORT" --random-seed "$SEED" --attention-backend "$ATTN_BACKEND" --mm-attention-backend "$MM_ATTN_BACKEND" ${SERVER_EXTRA_ARGS:-} \
     > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
