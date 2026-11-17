@@ -21,6 +21,13 @@ export REPO_DIR="/projects/<your-project>/<you>/Reinitialized-Thinking-Experimen
 # (inside tmux: it takes hours). setup.sh checks the SGLang version inside it.
 export SGLANG_SIF="/projects/<your-project>/<you>/containers/sglang-v0.5.23-runtime.sif"
 
+# Folder for the slime training image built by `submit.sh build-slime` (about 20 GB). The file
+# name and every version inside it come from configs/slime_container.toml.
+export SLIME_SIF_DIR="/projects/<your-project>/<you>/containers"
+# Megatron checkpoints: the converted start model (~5 GB) and each training run's checkpoints
+# (~30 GB per saved step with optimizer state). Project storage, not $HOME.
+export SLIME_CKPT_DIR="/projects/<your-project>/<you>/slime_checkpoints"
+
 # Apptainer's download cache and its unpacking scratch space. Both default to places that
 # are small on a login node ($HOME/.apptainer and /tmp); a 14 GB image needs project storage.
 export APPTAINER_CACHEDIR="/projects/<your-project>/<you>/apptainer_cache"
@@ -35,3 +42,9 @@ export HF_HOME="/projects/<your-project>/<you>/hf_cache"
 export SMOKE_TIME="00:20:00"
 export PILOT_TIME="01:30:00"
 export FULL_TIME="06:00:00"
+# The slime image build: about 1-1.5 h expected (TransformerEngine compile) + download; 2.5 h cap.
+export BUILD_SLIME_TIME="02:30:00"
+# One-time weight conversion + check: about 20-30 min.
+export SLIME_SETUP_TIME="00:45:00"
+# Training: set from the pilot's measured step time (the 25-step pilot: about 2-3 h projected).
+export TRAIN_TIME="04:00:00"

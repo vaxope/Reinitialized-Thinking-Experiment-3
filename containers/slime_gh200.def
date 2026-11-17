@@ -1,0 +1,148 @@
+Bootstrap: docker
+From: {{ BASE_IMAGE }}@{{ BASE_DIGEST }}
+
+# containers/slime_gh200.def: Apptainer recipe for the slime training image on DeltaAI (GH200, arm64).
+#
+# Purpose : slime publishes x86-only images. This recipe starts from slime's own base image
+#           (SGLang v0.5.21, arm64 build) and adds only what Qwen3.5-2B GRPO needs, following
+#           slime @ 79aa41a docker/Dockerfile step by step (each step names its Dockerfile source).
+# Versions: NONE are written here. Every pin is an Apptainer build argument (double-brace
+#           placeholders; never write one in a comment, Apptainer fills those too), filled from
+#           configs/slime_container.toml by src/slime_container.py; build with
+#           scripts/deltaai/build_slime.sbatch. A missing argument makes the build fail at once.
+# Output  : the .sif image; inside it /opt/gar/build_info.json (versions of every installed piece)
+#           and /opt/gar/pip_freeze.txt (the full package list), so the image documents itself.
+# Pipeline: this image runs slime (SGLang rollouts + Megatron training) in
+#           scripts/deltaai/train_reinit.sbatch. GPQA evaluation does NOT use it (control image).
+
+%labels
+    gar.purpose slime training image for Qwen3.5-2B GRPO on DeltaAI GH200
+    gar.slime_commit {{ SLIME_COMMIT }}
+    gar.base {{ BASE_IMAGE }}@{{ BASE_DIGEST }}
+
+%environment
+    # Megatron's training/ and legacy/ folders are imported from the source tree, not installed
+    # as a package (slime docs; NOTES_GB10.md #14).
+    export PYTHONPATH="/opt/Megatron-LM${PYTHONPATH:+:$PYTHONPATH}"
+    # NCCL library path, written at build time (slime Dockerfile sets LD_LIBRARY_PATH the same way).
+    if [ -f /opt/gar/env.sh ]; then . /opt/gar/env.sh; fi
+
+%post -c /bin/bash
+    set -euxo pipefail
+    mkdir -p /opt/gar
+    # DeltaAI (HPE Cray) sets CC=cc / CXX=CC for its own wrappers, which don't exist in the image
+    # (smoke job 3611226). Compile with the image's own gcc/g++.
+    export CC=gcc CXX=g++
+    export MAX_JOBS={{ MAX_JOBS }} CMAKE_BUILD_PARALLEL_LEVEL={{ MAX_JOBS }}
+    export TORCH_CUDA_ARCH_LIST="{{ TORCH_CUDA_ARCH_LIST }}"
+    PIP="python3 -m pip"
+
+    # ---- 0. what the base image provides (recorded in the build log)
+    python3 -c 'import sys, torch, sglang; print("python", sys.version.split()[0], "| torch", torch.__version__, "| cuda", torch.version.cuda, "| sglang", sglang.__version__)'
+    nvcc --version | tail -n 2
+    # slime patches SGLang's source tree; the base image must contain it as a git checkout.
+    if [ ! -d /sgl-workspace/sglang/.git ]; then
+        echo "ERROR: /sgl-workspace/sglang is not a git checkout; slime's SGLang patches cannot be applied" >&2
+        exit 1
+    fi
+    CUDA_MAJOR="$(python3 -c 'import torch; print(torch.version.cuda.split(".")[0])')"
+
+    # ---- 1. keep the base image's CUDA / PyTorch / SGLang stack fixed during later installs
+    #         (slime Dockerfile "Preserve SGLang's CUDA 13/PyTorch stack"; packages that are
+    #         absent from the base image are skipped)
+    python3 - <<'PYEOF'
+import importlib.metadata as m
+names = ("torch", "torchvision", "torchaudio", "cuda-python", "cuda-bindings", "sglang-kernel",
+         "sgl-deep-gemm", "flashinfer-python", "flashinfer-cubin", "transformers")
+lines = []
+for n in names:
+    try:
+        lines.append(f"{n}=={m.version(n)}\n")
+    except m.PackageNotFoundError:
+        pass
+open("/opt/gar/constraints.txt", "w").write("".join(lines))
+print("constraints:", "".join(lines).replace("\n", " "))
+PYEOF
+    export PIP_CONSTRAINT=/opt/gar/constraints.txt
+
+    # ---- 2. slime source at the pinned commit (its patches and requirements are used below)
+    git clone {{ SLIME_REPO }} /opt/slime
+    git -C /opt/slime checkout {{ SLIME_COMMIT }}
+    PATCH_DIR=/opt/slime/docker/patch/{{ PATCH_SET }}
+
+    # ---- 3. flash-linear-attention: Qwen3.5's gated-delta layers (slime Dockerfile line "pip install flash-linear-attention")
+    $PIP install "flash-linear-attention=={{ FLA_VERSION }}" scikit-build-core
+
+    # ---- 4. TransformerEngine: official core wheel + PyTorch bindings compiled here, for sm90 only
+    #         (slime Dockerfile "Use the official TE core wheel"; NCCL EP bindings off as in slime)
+    $PIP uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch || true
+    NVTE_WITH_NCCL_EP=0 NVTE_CUDA_ARCHS="{{ TE_CUDA_ARCHS }}" \
+        $PIP -v install --no-build-isolation "transformer_engine[pytorch,core_cu${CUDA_MAJOR}]=={{ TE_VERSION }}"
+
+    # ---- 5. Megatron-LM at the pinned commit + slime's patches (slime Dockerfile "Patches")
+    git clone --recursive {{ MEGATRON_REPO }} /opt/Megatron-LM
+    git -C /opt/Megatron-LM checkout {{ MEGATRON_COMMIT }}
+    git -C /opt/Megatron-LM submodule update --init --recursive
+    for p in {{ MEGATRON_PATCHES }}; do
+        if [ ! -f "$PATCH_DIR/$p" ]; then
+            if [ "$p" = "megatron.patch" ]; then echo "ERROR: required $p missing" >&2; exit 1; fi
+            echo "optional patch $p not in $PATCH_DIR, skipped"; continue
+        fi
+        git -C /opt/Megatron-LM apply --3way "$PATCH_DIR/$p"
+        if git -C /opt/Megatron-LM grep -n '^<<<<<<< ' -- . ; then echo "ERROR: $p left conflicts" >&2; exit 1; fi
+    done
+    $PIP install -e /opt/Megatron-LM
+    $PIP install --no-deps "nvidia-resiliency-ext=={{ NRE_VERSION }}"
+
+    # ---- 6. torch_memory_saver: SGLang gives its GPU memory back while Megatron trains (--colocate)
+    TMS_CUDA_MAJOR="$CUDA_MAJOR" \
+        $PIP install "git+{{ TMS_REPO }}@{{ TMS_COMMIT }}" --no-cache-dir --force-reinstall --no-build-isolation
+
+    # ---- 7. slime's Python requirements, keeping the base image's SGLang version; the router is
+    #         the upstream PyPI package (arm64 wheel) instead of slime's x86-only fork wheel
+    $PIP install --ignore-installed PyJWT
+    SGLANG_VERSION="$(python3 -c 'import importlib.metadata as m; print(m.version("sglang"))')"
+    $PIP install -r /opt/slime/requirements.txt "sglang==${SGLANG_VERSION}" "sglang-router=={{ ROUTER_VERSION }}"
+
+    # ---- 8. scientific stack and NCCL runtime as slime pins them
+    $PIP install "numpy=={{ NUMPY_VERSION }}" "scipy=={{ SCIPY_VERSION }}" "pyarrow=={{ PYARROW_VERSION }}" "kernels<{{ KERNELS_BELOW }}"
+    $PIP install --no-deps --force-reinstall "nvidia-nccl-cu${CUDA_MAJOR}=={{ NCCL_VERSION }}"
+
+    # ---- 9. slime's SGLang patches (weight sync, top-p, rollout alignment), applied in slime's order
+    for p in {{ SGLANG_PATCHES }}; do
+        if [ ! -f "$PATCH_DIR/$p" ]; then
+            if [ "$p" = "sglang.patch" ]; then echo "ERROR: required $p missing" >&2; exit 1; fi
+            echo "optional patch $p not in $PATCH_DIR, skipped"; continue
+        fi
+        git -C /sgl-workspace/sglang apply --check "$PATCH_DIR/$p"
+        git -C /sgl-workspace/sglang apply "$PATCH_DIR/$p"
+    done
+
+    # ---- 10. slime itself (no dependency resolution: everything is installed above)
+    $PIP install -e /opt/slime --no-deps
+
+    # ---- 11. NCCL library path for the runtime (read by %environment)
+    NCCL_LIB="$(python3 -c 'import importlib.util as u, os; print(os.path.join(list(u.find_spec("nvidia.nccl").submodule_search_locations)[0], "lib"))')"
+    echo "export LD_LIBRARY_PATH=\"$NCCL_LIB\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"" > /opt/gar/env.sh
+
+    # ---- 12. import check (CPU) and self-documentation
+    PYTHONPATH=/opt/Megatron-LM python3 - <<'PYEOF'
+import importlib, importlib.metadata as m, json
+mods = ["torch", "sglang", "sglang_router", "megatron.core", "transformer_engine", "fla",
+        "torch_memory_saver", "ray", "transformers", "slime", "slime_plugins.models.qwen3_5"]
+for name in mods:
+    importlib.import_module(name)   # raises -> the build fails here, not in a paid training job
+dists = ["torch", "sglang", "sglang-router", "megatron-core", "transformer_engine", "flash-linear-attention",
+         "torch_memory_saver", "ray", "transformers", "nvidia-nccl-cu13", "numpy", "slime"]
+info = {}
+for d in dists:
+    try:
+        info[d] = m.version(d)
+    except m.PackageNotFoundError:
+        info[d] = None
+json.dump(info, open("/opt/gar/build_info.json", "w"), indent=2)
+print("imports OK:", json.dumps(info))
+PYEOF
+    $PIP freeze > /opt/gar/pip_freeze.txt
+    git -C /sgl-workspace/sglang diff --stat | tail -n 1 > /opt/gar/sglang_patch_stat.txt
+    rm -rf /root/.cache/pip

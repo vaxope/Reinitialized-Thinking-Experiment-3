@@ -1,0 +1,208 @@
+# configs/train_reinit.toml: every parameter of the GRPO training run in the reinit format.
+#
+# Purpose : single source of truth for training Qwen3.5-2B with slime (GRPO) on SuperGPQA
+#           physics/chemistry/biology questions posed in the `reinit` format. No script
+#           hard-codes these values: src/train_args.py turns this file into slime's
+#           command-line flags, src/train_prep.py reads [data], src/slime_hooks.py reads
+#           [sampling], src/reward.py reads [reward].
+# Decided : by the user on 2026-11-15/16/17 (vault: decisions/2026-11-16-grpo-parameter-sheet.md).
+#           "Plain GRPO only": no components of other methods (no DAPO dynamic sampling,
+#           clip-higher or per-token loss, no TIS, no entropy bonus).
+# Pipeline: data/train/supergpqa_pcb_v1/{train,val}.jsonl --[src/train_prep.py]--> slime input
+#           files --[slime train.py with src/train_args.py flags, inside the slime container on
+#           DeltaAI]--> checkpoints --> converted to HF --> evaluated exactly like control_v1.
+# Rule    : once a run has started, changing any value means a new run name ([run] name).
+#
+# Each value: meaning | value | source | reason.
+
+[run]
+# Name of the run: output folder runs/<name>/ and the checkpoint folder name.
+name = "train_reinit_v1"
+# Megatron's global seed (dropout is off, so it mainly fixes initialisation of anything random
+# in the trainer) | 1234 | Megatron/slime default (slime arguments.py `--seed`) | stated so the
+# run is fully specified.
+seed = 1234
+# Steps to run (`--num-rollout`): one step = one batch of rollouts + one optimizer update.
+# 25 = the pilot agreed on 2026-11-16 (measure step time, check that validation moves). The
+# length of the main run is decided from the pilot (one epoch = 5,433 / 16 = 340 steps); a
+# different value means a new run name.
+num_steps = 25
+
+[model]
+# Starting model | CLAUDE.md control-run spec | the same weights as the baseline.
+hf_repo = "Qwen/Qwen3.5-2B"
+revision = "15852e8c16360a2fea060d615a32b45270f8a8fc"
+# The template hash the baseline was checked against (configs/control.toml [model]); the
+# data prep refuses a tokenizer with any other template.
+chat_template_sha256 = "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80"
+
+[megatron_model]
+# Architecture of Qwen3.5-2B for Megatron, in the format of slime's scripts/models/
+# qwen3.5-0.8B.sh and qwen3.5-4B.sh (slime @ 79aa41a; there is no 2B script). Source of the
+# numbers: the model's config.json @ 15852e8c, text_config. src/train_args.py compares every
+# value with config.json at run time and refuses to start on any mismatch.
+spec = ["slime_plugins.models.qwen3_5", "get_qwen3_5_spec"]   # slime's Qwen3.5 layer plugin
+num_layers = 24              # num_hidden_layers
+hidden_size = 2048           # hidden_size
+ffn_hidden_size = 6144       # intermediate_size
+num_attention_heads = 8      # num_attention_heads
+num_query_groups = 2         # num_key_value_heads (grouped-query attention)
+kv_channels = 256            # head_dim
+vocab_size = 248320          # vocab_size
+rotary_base = 10000000       # rope_theta
+rotary_percent = 0.25        # partial_rotary_factor (rope on a quarter of each head)
+norm_epsilon = 1e-6          # rms_norm_eps
+# Flags with no value, as in slime's 0.8B/4B scripts (same architecture family): no biases,
+# per-head q/k norm, GQA, gated attention + output gate, RMSNorm with the (1+w) form, SwiGLU, rope.
+flags = ["--disable-bias-linear", "--qk-layernorm", "--group-query-attention",
+         "--use-gated-attention", "--attention-output-gate", "--apply-layernorm-1p",
+         "--swiglu"]
+normalization = "RMSNorm"
+position_embedding_type = "rope"
+# Longest position the model supports | 262,144 | config.json max_position_embeddings | set
+# explicitly because slime otherwise fills in 4,096 (slime/backends/megatron_utils/arguments.py
+# _set_default_megatron_args), far below our 34,816-token sequences.
+max_position_embeddings = 262144
+# Dropout off | 0.0 | slime scripts/run-qwen3-4B.sh (Megatron's default is 0.1) | RL computes
+# token probabilities in the trainer and compares them with the rollout's; random dropout would
+# make them differ for no reason. The pretrained model was not trained with dropout either.
+attention_dropout = 0.0
+hidden_dropout = 0.0
+
+[numerics]
+# Numerical-precision settings, both from slime scripts/run-qwen3-4B.sh: sum gradients across
+# micro-batches in fp32, and compute attention softmax in fp32. They change rounding only, not
+# the algorithm. (slime always trains in bf16 with fp32 master weights; it sets bf16 itself.)
+accumulate_allreduce_grads_in_fp32 = true
+attention_softmax_in_fp32 = true
+
+[data]
+# The training-data build this run uses (configs/train_data.toml [output] dir).
+source_dir = "data/train/supergpqa_pcb_v1"
+# Which prompt the questions are posed in | "reinit" | the experiment (user, 2026-11-15).
+# The matched control run (user, 2026-11-17) uses "default" with everything else identical.
+prompt_mode = "reinit"
+# Option shuffle for training questions: seed string "<salt>|<qid>|0" (src/prompts.shuffle_seed).
+# One fixed order per question, shared by its 8 answers (GRPO compares answers to the SAME
+# prompt). A salt different from GPQA's ("gpqa-control-v1") so the two are independent.
+shuffle_salt = "supergpqa-train-v1"
+# Where src/train_prep.py writes slime's input files (gitignored data/).
+output_dir = "data/train/supergpqa_pcb_v1/slime_reinit"
+# Keys inside those files, passed to slime as --input-key / --label-key / --metadata-key.
+input_key = "text"
+label_key = "label"
+metadata_key = "metadata"
+
+[reward]
+# Answer rule for the reward | the control run's official rule | so the reward measures
+# exactly what evaluation measures. src/train_args.py refuses to start if it differs from
+# configs/control.toml [scoring] extraction_rule.
+rule = "last_answer_field_v3"
+# Reward values | 1 for the gold letter, 0 otherwise (wrong, no answer, cut off at the limit,
+# <analysis> never closed) | user, 2026-11-15 | no format reward, no partial credit.
+correct = 1.0
+incorrect = 0.0
+
+[sampling]
+# Rollout sampling = the control run's sampling, exactly (user, 2026-11-15). src/train_args.py
+# refuses to start if any value differs from configs/control.toml [sampling].
+# temperature / top_p / top_k go to slime's own flags; min_p, presence_penalty and
+# repetition_penalty are added by src/slime_hooks.py, because slime does not pass them to
+# SGLang (slime/rollout/sglang_rollout.py builds sampling_params from temperature/top_p/top_k only).
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 1.5
+repetition_penalty = 1.0
+
+[rollout]
+# Answers per question (the GRPO group) | 8 | user, 2026-11-17 | 17% of groups expected to have
+# no signal (all right or all wrong) vs 36% at 4, at half the cost of 16.
+n_samples_per_prompt = 8
+# Questions per step | 16 | user, 2026-11-17.
+rollout_batch_size = 16
+# Answers per optimizer update | 16 x 8 = 128 | so each step makes exactly ONE update with
+# the weights that wrote the answers (fully on-policy). src/train_args.py checks the product.
+global_batch_size = 128
+# Longest answer | 32,768 tokens | user, 2026-11-17 | control_v1's longest finished reinit
+# answer was 20,075 tokens, so normal answers are never cut; loops stop at 32k (reward 0).
+max_response_len = 32768
+# Longest prompt | 2,048 tokens | the longest reinit training prompt is 1,620 tokens
+# (measured 2026-11-16) | slime silently drops longer prompts, so src/train_prep.py refuses
+# to write any prompt above this limit instead.
+max_prompt_len = 2048
+# Shuffle question order each epoch, with this seed (slime --rollout-shuffle --rollout-seed;
+# 42 = slime's default) | so physics/chemistry/biology are mixed and the order is reproducible.
+shuffle = true
+shuffle_seed = 42
+
+[grpo]
+# Plain GRPO as published (DeepSeekMath, Shao et al. 2024). user, 2026-11-17.
+advantage_estimator = "grpo"
+# Advantage = (reward - group mean) / group std. Standard GRPO divides by the std.
+std_normalization = true
+# PPO clip range, symmetric | 0.2 | user, 2026-11-16 (no DAPO clip-higher).
+eps_clip = 0.2
+# KL penalty against a frozen copy of the starting model | on, k3, 0.001 | user, 2026-11-17.
+use_kl_loss = true
+kl_loss_type = "k3"
+kl_loss_coef = 0.001
+# Loss averaging | per answer (false = slime's default, sum of per-sample means) | user,
+# 2026-11-17: the original GRPO form, not DAPO's per-token average. Known property: it weakens
+# the per-token penalty of long wrong answers (Dr. GRPO, Liu et al. 2025); stated in the write-up.
+per_token_loss = false
+# Not part of plain GRPO; listed so a test can check they stay off.
+entropy_coef = 0.0
+use_tis = false
+dynamic_sampling = false
+
+[optimizer]
+# AdamW at Megatron's defaults (slime's pinned Megatron ae76c60e, megatron/training/arguments.py
+# and core/optimizer/optimizer_config.py, read 2026-11-17) | user, 2026-11-17. Every value is
+# written out so nothing depends on a hidden default.
+optimizer = "adam"            # Megatron's Adam with decoupled weight decay = AdamW
+lr = 1e-6                     # user, 2026-11-15
+lr_decay_style = "constant"   # the same lr every step (set explicitly: slime examples do too)
+lr_warmup_iters = 0           # no warmup
+adam_beta1 = 0.9
+adam_beta2 = 0.999
+adam_eps = 1e-8
+weight_decay = 0.01
+clip_grad = 1.0               # gradient norm clip
+
+[eval]
+# Validation on the held-out SuperGPQA slice (300 questions; GPQA is never used here).
+# Every 20 steps and before step 1, 1 answer per question, same sampling and limit as training.
+interval = 20
+n_samples_per_prompt = 1
+max_response_len = 32768
+# Name under which slime reports it (`--eval-prompt-data <name> <path>`).
+name = "supergpqa_val"
+
+[checkpoint]
+# Save every 20 steps, the same steps as validation, so the checkpoint chosen by validation
+# accuracy exists on disk. Chosen checkpoint = highest validation v3 accuracy (ties -> later).
+save_interval = 20
+
+[hardware]
+# 1 GH200; training and generation share it, taking turns (slime --colocate, which also turns
+# on offloading) | user, 2026-11-17.
+num_gpus = 1
+# One SGLang engine on that GPU.
+rollout_num_gpus_per_engine = 1
+# Share of GPU memory SGLang may take while generating (Megatron is offloaded then) | 0.7 |
+# slime scripts/run-qwen3-4B.sh | TUNE IN THE PILOT.
+sglang_mem_fraction_static = 0.7
+# Megatron packs sequences into micro-batches up to this many tokens. Must hold one whole
+# prompt + answer (2,048 + 32,768 = 34,816) because a sequence is never split on 1 GPU |
+# 36,864 = 9 x 4,096, the next multiple of 4,096 above 34,816 | TUNE IN THE PILOT.
+max_tokens_per_gpu = 36864
+# Log-probs computed over the 248k-token vocabulary in chunks of this many positions, so a
+# 32k-token answer never needs its full logits at once | 1024 | slime run-qwen3-4B.sh.
+log_probs_chunk_size = 1024
+# Recompute activations in the backward pass instead of storing them (less memory, more
+# compute) | full / uniform / 1 | slime run-qwen3-4B.sh.
+recompute_granularity = "full"
+recompute_method = "uniform"
+recompute_num_layers = 1
