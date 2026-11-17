@@ -42,8 +42,10 @@ export HF_HOME="/projects/<your-project>/<you>/hf_cache"
 export SMOKE_TIME="00:20:00"
 export PILOT_TIME="01:30:00"
 export FULL_TIME="06:00:00"
-# The slime image build: about 1-1.5 h expected (TransformerEngine compile) + download; 2.5 h cap.
-export BUILD_SLIME_TIME="02:30:00"
+# The slime image build. Job 3616837 (failed at step 7) took 1 h 38 min to get there; the
+# rest (steps 7-12, writing the ~20-30 GB image, hash, GPU check) adds roughly 30-50 min, so
+# 2.5 h is too tight: a time-out while the image file is written loses the whole build.
+export BUILD_SLIME_TIME="03:30:00"
 # One-time weight conversion + check: about 20-30 min.
 export SLIME_SETUP_TIME="00:45:00"
 # Training: set from the pilot's measured step time (the 25-step pilot: about 2-3 h projected).

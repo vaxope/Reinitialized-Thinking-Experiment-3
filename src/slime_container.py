@@ -37,6 +37,7 @@ def build_args(cfg: dict) -> dict[str, str]:
         "SLIME_REPO": s["repo"], "SLIME_COMMIT": s["commit"], "PATCH_SET": s["patch_set"],
         "MEGATRON_PATCHES": " ".join(s["megatron_patches"]),
         "SGLANG_PATCHES": " ".join(s["sglang_patches"]),
+        "SKIP_REQUIREMENTS": " ".join(s["skip_requirements"]),
         "MEGATRON_REPO": p["megatron_repo"], "MEGATRON_COMMIT": p["megatron_commit"],
         "TE_VERSION": p["transformer_engine"], "FLA_VERSION": p["flash_linear_attention"],
         "NRE_VERSION": p["nvidia_resiliency_ext"],

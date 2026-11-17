@@ -30,7 +30,7 @@ case "$KIND" in
   smoke) TIME="${SMOKE_TIME:-00:30:00}"; SCRIPT=scripts/deltaai/smoke_test.sbatch; JOB_ARGS=() ;;
   pilot) TIME="${PILOT_TIME:-02:00:00}"; SCRIPT=scripts/deltaai/run_control.sbatch; JOB_ARGS=(--run-id "${2:-pilot_v1}" --pilot) ;;
   full)  TIME="${FULL_TIME:-24:00:00}";  SCRIPT=scripts/deltaai/run_control.sbatch; JOB_ARGS=(--run-id "${2:-control_v1}") ;;
-  build-slime) TIME="${BUILD_SLIME_TIME:-02:30:00}"; SCRIPT=scripts/deltaai/build_slime.sbatch; JOB_ARGS=() ;;
+  build-slime) TIME="${BUILD_SLIME_TIME:-03:30:00}"; SCRIPT=scripts/deltaai/build_slime.sbatch; JOB_ARGS=() ;;
   slime-setup) TIME="${SLIME_SETUP_TIME:-00:45:00}"; SCRIPT=scripts/deltaai/slime_setup.sbatch; JOB_ARGS=() ;;
   train)       TIME="${TRAIN_TIME:-04:00:00}";       SCRIPT=scripts/deltaai/train_reinit.sbatch; JOB_ARGS=() ;;
   *) echo "usage: $0 smoke|pilot [RUN_ID]|full [RUN_ID]|build-slime|slime-setup|train [--dry-run]"; exit 2 ;;

@@ -99,16 +99,30 @@ PYEOF
         $PIP install "git+{{ TMS_REPO }}@{{ TMS_COMMIT }}" --no-cache-dir --force-reinstall --no-build-isolation
 
     # ---- 7. slime's Python requirements, keeping the base image's SGLang version; the router is
-    #         the upstream PyPI package (arm64 wheel) instead of slime's x86-only fork wheel
+    #         the upstream PyPI package (arm64 wheel) instead of slime's x86-only fork wheel.
+    #         Packages in the config's skip list (x86-only, unused by slime's core) are removed
+    #         from a copy of requirements.txt first; a name that isn't there stops the build.
+    REQS=/opt/gar/slime_requirements.txt
+    cp /opt/slime/requirements.txt "$REQS"
+    for n in {{ SKIP_REQUIREMENTS }}; do
+        if ! grep -q -E "^${n}([^A-Za-z0-9_.-]|$)" "$REQS"; then
+            echo "ERROR: $n is not in slime's requirements.txt; update [slime] skip_requirements" >&2; exit 1
+        fi
+        sed -i -E "/^${n}([^A-Za-z0-9_.-]|$)/d" "$REQS"
+        echo "requirement $n removed (see configs/slime_container.toml)"
+    done
     $PIP install --ignore-installed PyJWT
     SGLANG_VERSION="$(python3 -c 'import importlib.metadata as m; print(m.version("sglang"))')"
-    $PIP install -r /opt/slime/requirements.txt "sglang==${SGLANG_VERSION}" "sglang-router=={{ ROUTER_VERSION }}"
+    $PIP install -r "$REQS" "sglang==${SGLANG_VERSION}" "sglang-router=={{ ROUTER_VERSION }}"
 
     # ---- 8. scientific stack and NCCL runtime as slime pins them
     $PIP install "numpy=={{ NUMPY_VERSION }}" "scipy=={{ SCIPY_VERSION }}" "pyarrow=={{ PYARROW_VERSION }}" "kernels<{{ KERNELS_BELOW }}"
     $PIP install --no-deps --force-reinstall "nvidia-nccl-cu${CUDA_MAJOR}=={{ NCCL_VERSION }}"
 
-    # ---- 9. slime's SGLang patches (weight sync, top-p, rollout alignment), applied in slime's order
+    # ---- 9. slime's SGLang patches (weight sync, top-p, rollout alignment), applied in slime's order.
+    #         The SGLang checkout comes from the base image's layers, not from this build; mark it
+    #         safe so git's ownership check can't refuse it under the fakeroot user mapping.
+    git config --global --add safe.directory /sgl-workspace/sglang
     for p in {{ SGLANG_PATCHES }}; do
         if [ ! -f "$PATCH_DIR/$p" ]; then
             if [ "$p" = "sglang.patch" ]; then echo "ERROR: required $p missing" >&2; exit 1; fi
@@ -125,13 +139,24 @@ PYEOF
     NCCL_LIB="$(python3 -c 'import importlib.util as u, os; print(os.path.join(list(u.find_spec("nvidia.nccl").submodule_search_locations)[0], "lib"))')"
     echo "export LD_LIBRARY_PATH=\"$NCCL_LIB\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"" > /opt/gar/env.sh
 
-    # ---- 12. import check (CPU) and self-documentation
+    # ---- 12. import check and self-documentation. The build has no GPU driver (no --nv), so a
+    #          module that fails ONLY because the CUDA driver is missing is deferred to
+    #          scripts/deltaai/check_slime_gpu.py, which imports every module again on the GPU right
+    #          after the build. Any other import error (a missing or broken package) stops the
+    #          build here. The module list must equal IMPORT_MODULES in check_slime_gpu.py (tested).
     PYTHONPATH=/opt/Megatron-LM python3 - <<'PYEOF'
-import importlib, importlib.metadata as m, json
+import importlib, importlib.metadata as m, json, sys
 mods = ["torch", "sglang", "sglang_router", "megatron.core", "transformer_engine", "fla",
         "torch_memory_saver", "ray", "transformers", "slime", "slime_plugins.models.qwen3_5"]
+driver_hints = ("libcuda", "cuda driver", "nvidia driver", "no cuda gpus", "cuda-capable device",
+                "cudaerrorinsufficientdriver", "cudaerrornodevice", "found no nvidia driver")
+failed, deferred = {}, {}
 for name in mods:
-    importlib.import_module(name)   # raises -> the build fails here, not in a paid training job
+    try:
+        importlib.import_module(name)
+    except Exception as e:
+        msg = f"{type(e).__name__}: {e}"
+        (deferred if any(h in msg.lower() for h in driver_hints) else failed)[name] = msg
 dists = ["torch", "sglang", "sglang-router", "megatron-core", "transformer_engine", "flash-linear-attention",
          "torch_memory_saver", "ray", "transformers", "nvidia-nccl-cu13", "numpy", "slime"]
 info = {}
@@ -140,9 +165,19 @@ for d in dists:
         info[d] = m.version(d)
     except m.PackageNotFoundError:
         info[d] = None
+info["_imports_deferred_to_gpu_check"] = deferred
 json.dump(info, open("/opt/gar/build_info.json", "w"), indent=2)
+for name, msg in deferred.items():
+    print(f"import {name} deferred to the GPU check (needs the driver): {msg}")
+if failed:
+    for name, msg in failed.items():
+        print(f"ERROR: import {name} failed: {msg}", file=sys.stderr)
+    sys.exit(1)
 print("imports OK:", json.dumps(info))
 PYEOF
+    # Record pip's view of dependency conflicts in the log (information only: the base image
+    # already carries some, and slime's own image is built the same way).
+    $PIP check || true
     $PIP freeze > /opt/gar/pip_freeze.txt
     git -C /sgl-workspace/sglang diff --stat | tail -n 1 > /opt/gar/sglang_patch_stat.txt
     rm -rf /root/.cache/pip

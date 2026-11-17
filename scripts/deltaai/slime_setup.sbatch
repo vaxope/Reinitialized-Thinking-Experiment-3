@@ -11,7 +11,10 @@
 #   3. convert it back to Hugging Face format (tools/convert_torch_dist_to_hf.py) and require every
 #      language-model weight to match the original (src/check_roundtrip.py); then delete that
 #      temporary copy (it was created by this job and is not needed again);
-#   4. build the training flags once (src/train_args.py) to catch any config problem now.
+#   4. build the training flags once (src/train_args.py) and run them through slime's REAL parser
+#      (scripts/deltaai/check_slime_args.py, seconds): slime drops unknown Megatron flags
+#      silently, so a flag it doesn't know, or a value it changes, would otherwise only show up
+#      as a wrong setting in a paid training run. Needs the converted copy from step 2 (--ref-load).
 # Output: $SLIME_CKPT_DIR/<model>_<rev>_torch_dist (about 5 GB). Never overwritten: if it exists,
 # the job stops (delete it yourself to redo the conversion).
 #SBATCH --job-name=gar-slime-setup
@@ -62,5 +65,7 @@ fi
 # ---- 4
 S python3 -m src.train_args --hf-checkpoint "$HF_SNAPSHOT" --ref-load "$REF_DIR" \
   --save "$SLIME_CKPT_DIR/$RUN_NAME" --out "runs/$RUN_NAME/slime_args_setup.txt" > /dev/null
-echo "[setup] training flags OK ($(wc -l < "runs/$RUN_NAME/slime_args_setup.txt") lines, runs/$RUN_NAME/slime_args_setup.txt)"
+echo "[setup] training flags built ($(wc -l < "runs/$RUN_NAME/slime_args_setup.txt") lines, runs/$RUN_NAME/slime_args_setup.txt)"
+S env GAR_TRAIN_CONFIG="$REPO_DIR/configs/train_reinit.toml" PYTHONPATH="/opt/Megatron-LM" \
+  python3 scripts/deltaai/check_slime_args.py "runs/$RUN_NAME/slime_args_setup.txt"
 echo "[setup] $(date -u +%FT%TZ) PASS"

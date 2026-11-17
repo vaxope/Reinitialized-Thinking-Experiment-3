@@ -36,6 +36,13 @@ megatron_patches = ["megatron.patch", "megatron-sglang-aligned.patch"]
 sglang_patches = ["sglang.patch", "sglang-top_p.patch", "sglang-release_hicache.patch",
                   "sglang-pull_weights.patch", "sglang-deterministic.patch",
                   "sglang-radio_layerscale.patch", "sglang-nemotron-multi-image.patch"]
+# Packages removed from slime's requirements.txt before it is installed | ["sunabako"] |
+# build job 3616837 (2026-11-17) failed on it after 1 h 38 min: sunabako (sandboxes for slime's
+# coding-agent example) has only x86_64 wheels, and its source package hard-codes
+# target = "x86_64-unknown-linux-gnu" in .cargo/config.toml, so it cannot compile on arm64.
+# slime @ 79aa41a imports it only in examples/coding_agent_rl/, never in slime/ or train.py.
+# The recipe fails if a listed name is not in requirements.txt (no silent no-op).
+skip_requirements = ["sunabako"]
 
 [pins]
 # All from slime @ 79aa41a docker/Dockerfile unless noted.

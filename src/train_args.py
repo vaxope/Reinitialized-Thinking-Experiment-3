@@ -281,6 +281,49 @@ def build_args(cfg: dict, paths: dict) -> list[str]:
     return a
 
 
+def expected_resolved(cfg: dict) -> dict:
+    """What slime's parsed `args` must hold after it reads build_args' flags: attribute -> value.
+
+    Checked inside the image by scripts/deltaai/check_slime_args.py (setup job). It catches what
+    a flag list alone cannot: slime parses Megatron's flags with ignore_unknown_args=True, so a
+    flag it does not know is dropped silently, and its validation fills in values of its own
+    (e.g. eps_clip_high = eps_clip). Every value comes from the config; nothing new is decided here.
+    """
+    m, ro, g, o = cfg["megatron_model"], cfg["rollout"], cfg["grpo"], cfg["optimizer"]
+    ev, hw, nu, s = cfg["eval"], cfg["hardware"], cfg["numerics"], cfg["sampling"]
+    exp = {
+        # plain GRPO (symmetric clip: slime copies eps_clip into eps_clip_high when not given)
+        "advantage_estimator": g["advantage_estimator"], "grpo_std_normalization": g["std_normalization"],
+        "eps_clip": g["eps_clip"], "eps_clip_high": g["eps_clip"],
+        "use_kl_loss": g["use_kl_loss"], "kl_loss_type": g["kl_loss_type"], "kl_loss_coef": g["kl_loss_coef"],
+        "entropy_coef": g["entropy_coef"], "calculate_per_token_loss": g["per_token_loss"],
+        "use_tis": g["use_tis"],
+        # batches and lengths
+        "n_samples_per_prompt": ro["n_samples_per_prompt"], "rollout_batch_size": ro["rollout_batch_size"],
+        "global_batch_size": ro["global_batch_size"], "rollout_max_response_len": ro["max_response_len"],
+        "rollout_max_prompt_len": ro["max_prompt_len"], "eval_max_response_len": ev["max_response_len"],
+        "rollout_shuffle": ro["shuffle"], "rollout_seed": ro["shuffle_seed"],
+        "num_rollout": cfg["run"]["num_steps"], "seed": cfg["run"]["seed"],
+        "save_interval": cfg["checkpoint"]["save_interval"], "eval_interval": ev["interval"],
+        # sampling slime itself sends (the hook adds min_p and the penalties)
+        "rollout_temperature": s["temperature"], "rollout_top_p": s["top_p"], "rollout_top_k": s["top_k"],
+        # memory
+        "max_tokens_per_gpu": hw["max_tokens_per_gpu"], "log_probs_chunk_size": hw["log_probs_chunk_size"],
+        "sglang_mem_fraction_static": hw["sglang_mem_fraction_static"],
+        "accumulate_allreduce_grads_in_fp32": nu["accumulate_allreduce_grads_in_fp32"],
+        "attention_softmax_in_fp32": nu["attention_softmax_in_fp32"],
+    }
+    exp.update({k: o[k] for k in ("optimizer", "lr", "lr_decay_style", "lr_warmup_iters", "adam_beta1",
+                                   "adam_beta2", "adam_eps", "weight_decay", "clip_grad")})
+    exp.update({k: m[k] for k in ("num_layers", "hidden_size", "ffn_hidden_size", "num_attention_heads",
+                                   "num_query_groups", "kv_channels", "vocab_size", "rotary_base",
+                                   "rotary_percent", "norm_epsilon", "max_position_embeddings",
+                                   "attention_dropout", "hidden_dropout")})
+    if not g["dynamic_sampling"]:
+        exp["dynamic_sampling_filter_path"] = None
+    return exp
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--config", default=str(DEFAULT_TRAIN_CONFIG))

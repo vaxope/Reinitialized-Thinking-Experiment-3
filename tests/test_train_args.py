@@ -11,8 +11,9 @@ import tempfile
 from pathlib import Path
 
 from src.config import load_config
-from src.train_args import (FORBIDDEN_FLAGS, HF_CONFIG_KEYS, build_args, check_against_control,
-                            check_flags, check_hf_config, check_plain_grpo, load_train_config)
+from src.train_args import (FORBIDDEN_FLAGS, HF_CONFIG_KEYS, _flag_value, build_args, check_against_control,
+                            check_flags, check_hf_config, check_plain_grpo, expected_resolved,
+                            load_train_config)
 
 CFG = load_train_config()
 CONTROL = load_config()
@@ -124,3 +125,28 @@ def test_real_model_config_json_if_cached():
     if not snaps:
         return "SKIP: Qwen3.5-2B config.json not in the local HF cache"
     check_hf_config(CFG, snaps[0])
+
+
+def test_expected_resolved_values_agree_with_the_flags():
+    """scripts/deltaai/check_slime_args.py compares slime's parsed args with expected_resolved();
+    here: every expected value that has its own flag is exactly what build_args emits, so the
+    two can only disagree if slime drops or changes something."""
+    f = build_args(CFG, PATHS)
+    exp = expected_resolved(CFG)
+    checked = 0
+    for key, want in exp.items():
+        flag = "--" + key.replace("_", "-")
+        if isinstance(want, bool):
+            # on/off flags appear only when on (std normalisation is on by slime's default)
+            if flag in f:
+                assert want is True, (key, want)
+                checked += 1
+        elif flag in f:
+            assert value(f, flag) == _flag_value(want), (key, value(f, flag), want)
+            checked += 1
+    assert checked >= 40, checked
+    # values slime derives itself, written down explicitly
+    assert exp["eps_clip_high"] == CFG["grpo"]["eps_clip"]          # symmetric clip, no clip-higher
+    assert exp["calculate_per_token_loss"] is False and exp["use_tis"] is False
+    assert exp["dynamic_sampling_filter_path"] is None
+    assert exp["grpo_std_normalization"] is True and "--disable-grpo-std-normalization" not in f

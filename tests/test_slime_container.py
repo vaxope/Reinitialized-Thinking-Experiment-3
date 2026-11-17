@@ -9,6 +9,7 @@ import py_compile
 import re
 import shutil
 import subprocess
+from pathlib import Path
 
 from src.config import REPO_ROOT
 from src.slime_container import RECIPE, build_args, load
@@ -51,6 +52,28 @@ def test_build_args_are_complete_and_lists_are_flattened():
     assert a["MEGATRON_PATCHES"].split()[0] == "megatron.patch"     # required patch first
     assert a["SGLANG_PATCHES"].split()[0] == "sglang.patch"
     assert a["TORCH_CUDA_ARCH_LIST"] == "9.0"                        # GH200 = sm90 only
+    # x86-only package removed from slime's requirements (build job 3616837 failed on it)
+    assert a["SKIP_REQUIREMENTS"] == "sunabako"
+
+
+def test_skip_filter_removes_only_the_named_requirement():
+    """Run the recipe's grep/sed filter on slime's requirement-line shapes (needs GNU-compatible sed -E)."""
+    import tempfile
+    text = recipe_lines()
+    start = next(i for i, l in enumerate(text) if "for n in {{ SKIP_REQUIREMENTS }}" in l)
+    end = next(i for i in range(start, len(text)) if text[i].strip() == "done")
+    loop = "\n".join(text[start:end + 1]).replace("{{ SKIP_REQUIREMENTS }}", "sunabako")
+    with tempfile.TemporaryDirectory() as d:
+        reqs = Path(d) / "requirements.txt"
+        reqs.write_text("straw-queue>=0.1.5\nsunabako>=0.1.2\nsunabako-extra\nxxhash  # comment\n")
+        sed_i = "sed -i ''" if subprocess.run(["sed", "--version"], capture_output=True).returncode else "sed -i"
+        script = f'REQS="{reqs}"\n' + loop.replace("sed -i", sed_i)
+        r = subprocess.run([shutil.which("bash"), "-c", script], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        assert reqs.read_text().split("\n")[:3] == ["straw-queue>=0.1.5", "sunabako-extra", "xxhash  # comment"]
+        # a name that isn't listed stops the build
+        bad = script.replace("for n in sunabako", "for n in not-a-package")
+        assert subprocess.run([shutil.which("bash"), "-c", bad], capture_output=True).returncode == 1
 
 
 def test_pins_follow_the_plan():
@@ -60,8 +83,22 @@ def test_pins_follow_the_plan():
     assert CFG["pins"]["flash_linear_attention"] and CFG["pins"]["torch_memory_saver_commit"]
 
 
+def test_build_and_gpu_check_import_the_same_modules():
+    """The build defers driver-only import failures to the GPU check, so both lists must match."""
+    import ast
+    recipe = RECIPE.read_text()
+    block = recipe[recipe.index("mods = ["):]
+    build_mods = ast.literal_eval(block[len("mods = "):block.index("]") + 1])
+    gpu_src = (REPO_ROOT / "scripts" / "deltaai" / "check_slime_gpu.py").read_text()
+    seg = gpu_src[gpu_src.index("IMPORT_MODULES = ["):]
+    gpu_mods = ast.literal_eval(seg[len("IMPORT_MODULES = "):seg.index("]") + 1])
+    assert build_mods == gpu_mods, (build_mods, gpu_mods)
+    assert "slime_plugins.models.qwen3_5" in gpu_mods and "fla" in gpu_mods
+
+
 def test_scripts_parse():
     py_compile.compile(str(REPO_ROOT / "scripts" / "deltaai" / "check_slime_gpu.py"), doraise=True)
+    py_compile.compile(str(REPO_ROOT / "scripts" / "deltaai" / "check_slime_args.py"), doraise=True)
     bash = shutil.which("bash")
     for name in ("build_slime.sbatch", "submit.sh", "slime_common.sh", "slime_setup.sbatch",
                  "train_reinit.sbatch", "train_inside.sh"):
