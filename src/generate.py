@@ -29,9 +29,18 @@ keys already in generations.jsonl, so a job killed at its time limit continues w
 stopped. --retry-errors also re-sends keys whose only records are errors; the new attempt is
 appended and score.py keeps the latest record per key (the earlier one stays in the log).
 
+Trained models (added 2026-11-17): --checkpoint DIR serves a trained checkpoint (converted to HF
+format and checked by src/check_trained.py) instead of the pinned base model. ONLY the model
+changes: prompts, sampling, token limit, samples, seeds and option order still come from
+configs/control.toml, so the run compares one to one with control_v1. The tokenizer is loaded
+from DIR (its files are checked byte-identical to the base's), the folder's fingerprint is
+re-verified before any request, and every record's model_revision is "trained:<model_sha256>".
+Run ids starting with "eval" require --checkpoint, and --checkpoint requires an "eval" run id.
+
 Usage (normally via scripts/deltaai/*.sbatch, not by hand):
   python -m src.generate --run-id pilot_v1 --pilot
   python -m src.generate --run-id control_v1
+  python -m src.generate --run-id eval_train_reinit_v1_step80 --checkpoint <converted dir>
   python -m src.generate --run-id smoke_123 --limit-questions 2 --samples 1 --max-new-tokens 2048
 """
 from __future__ import annotations
@@ -63,7 +72,8 @@ HEALTH_POLL_S = 5          # seconds between /health checks while the server loa
 PROGRESS_EVERY = 10        # print a progress line every N finished generations
 # Run ids that may never use --max-new-tokens/--samples/--limit-questions overrides, so a
 # real run can't be accidentally created with non-standard settings.
-PROTECTED_PREFIXES = ("control", "pilot")
+PROTECTED_PREFIXES = ("control", "pilot", "eval")
+EVAL_PREFIX = "eval"       # trained-model evaluations (--checkpoint); protected like control runs
 EXIT_ERRORS = 3            # some generations were logged with an error
 EXIT_STALLED = 4           # stall guard: the server stopped producing output (see [generation])
 EXIT_INTERRUPTED = 143     # SIGTERM (128 + 15), Slurm's time limit or scancel
@@ -136,9 +146,12 @@ def server_facts(base: str) -> dict:
 
 
 # ---------------------------------------------------------------- tokenizer and checks
-def load_tokenizer(cfg: dict):
+def load_tokenizer(cfg: dict, checkpoint: str | None = None):
     from transformers import AutoTokenizer  # inside the SGLang container / local .venv
-    tok = AutoTokenizer.from_pretrained(cfg["model"]["name"], revision=cfg["model"]["revision"])
+    if checkpoint:   # a trained checkpoint carries the base tokenizer files (src/check_trained.py)
+        tok = AutoTokenizer.from_pretrained(checkpoint)
+    else:
+        tok = AutoTokenizer.from_pretrained(cfg["model"]["name"], revision=cfg["model"]["revision"])
     got = hashlib.sha256(tok.chat_template.encode()).hexdigest()
     if got != cfg["model"]["chat_template_sha256"]:
         sys.exit(f"Chat template hash {got} != pinned {cfg['model']['chat_template_sha256']}. "
@@ -330,8 +343,8 @@ def append_jsonl(path: Path, obj: dict) -> None:
         os.fsync(f.fileno())
 
 
-def check_run_dir(run_dir: Path, cfg: dict) -> None:
-    """A run directory belongs to exactly one config: refuse to mix settings in one run."""
+def check_run_dir(run_dir: Path, cfg: dict, model_sha256: str | None = None) -> None:
+    """A run directory belongs to exactly one config (and one trained checkpoint): refuse to mix."""
     meta = run_dir / "run_meta.jsonl"
     if not meta.exists():
         return
@@ -340,6 +353,9 @@ def check_run_dir(run_dir: Path, cfg: dict) -> None:
     if first.get("config_sha256") != cfg["_meta"]["sha256"]:
         sys.exit(f"{run_dir} was started with config {first.get('config_sha256')}, current config is "
                  f"{cfg['_meta']['sha256']}. Use a new --run-id (CLAUDE.md Rule 3).")
+    started = (first.get("checkpoint") or {}).get("model_sha256")
+    if started != model_sha256:
+        sys.exit(f"{run_dir} was started with model {started}, this job serves {model_sha256}. Use a new --run-id.")
 
 
 # ---------------------------------------------------------------- main
@@ -353,6 +369,8 @@ def parse_args(argv):
     ap.add_argument("--pilot", action="store_true", help="first [generation] pilot_n_questions questions x pilot samples")
     ap.add_argument("--retry-errors", action="store_true", help="re-send keys whose only records are errors")
     ap.add_argument("--concurrency", type=int, default=None, help="override [generation] concurrency (speed only)")
+    ap.add_argument("--checkpoint", default=None,
+                    help="trained model folder checked by src.check_trained (run id must start with 'eval')")
     # Overrides that change WHAT is generated: only for smoke tests, refused for control/pilot runs.
     ap.add_argument("--limit-questions", type=int, default=None)
     ap.add_argument("--samples", type=int, default=None)
@@ -369,6 +387,19 @@ def main(argv: list[str] | None = None) -> int:
                                    ("max_new_tokens", args.max_new_tokens)) if v is not None}
     if overrides and args.run_id.startswith(PROTECTED_PREFIXES):
         sys.exit(f"Overrides {overrides} are not allowed for run id {args.run_id!r}; use e.g. smoke_<id>.")
+    if bool(args.checkpoint) != args.run_id.startswith(EVAL_PREFIX):
+        sys.exit(f"--checkpoint and an {EVAL_PREFIX!r} run id go together (run id {args.run_id!r}, "
+                 f"checkpoint {args.checkpoint!r}).")
+    checkpoint = None
+    if args.checkpoint:
+        from src.check_trained import load_manifest
+        try:
+            manifest = load_manifest(Path(args.checkpoint))   # re-hashes every file (~seconds)
+        except ValueError as e:
+            sys.exit(f"Checkpoint refused: {e}")
+        checkpoint = {"dir": str(Path(args.checkpoint).resolve()), "model_sha256": manifest["model_sha256"],
+                      "source": manifest.get("source"), "check": manifest.get("check")}
+        print(f"[generate] trained checkpoint {checkpoint['dir']} (model_sha256 {checkpoint['model_sha256']})", flush=True)
 
     questions = load_questions(args.data or (REPO_ROOT / cfg["data"]["output_path"]))
     n_q = gen["pilot_n_questions"] if args.pilot else len(questions)
@@ -379,21 +410,24 @@ def main(argv: list[str] | None = None) -> int:
     selected = questions[:n_q]
 
     # --- safety checks (before touching the run directory)
-    tok = load_tokenizer(cfg)
+    tok = load_tokenizer(cfg, checkpoint["dir"] if checkpoint else None)
     check_parity(tok, selected, cfg)
     think_close_id = tok.convert_tokens_to_ids("</think>")
     base = args.server_url or f"http://{cfg['server']['host']}:{cfg['server']['port']}"
     waited = wait_for_server(base, gen["server_wait_timeout_s"])
     facts = server_facts(base)
     served = (facts.get("model_info") or {}).get("model_path")
-    if served and served.rstrip("/").split("/")[-1] != cfg["model"]["name"].split("/")[-1]:
+    if checkpoint:
+        if not served or Path(served).resolve() != Path(checkpoint["dir"]):
+            sys.exit(f"Server is serving {served!r}, expected the checkpoint {checkpoint['dir']!r}.")
+    elif served and served.rstrip("/").split("/")[-1] != cfg["model"]["name"].split("/")[-1]:
         sys.exit(f"Server is serving {served!r}, config expects {cfg['model']['name']!r}.")
     check_sglang_version(facts.get("sglang_version"), cfg, args.run_id)
     check_attention_backend(facts.get("server_args", {}), cfg, args.run_id)
 
     run_dir = Path(args.runs_dir) / args.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    check_run_dir(run_dir, cfg)
+    check_run_dir(run_dir, cfg, checkpoint["model_sha256"] if checkpoint else None)
     if not (run_dir / "control.toml").exists():
         shutil.copy(cfg["_meta"]["path"], run_dir / "control.toml")
     log_path = run_dir / "generations.jsonl"
@@ -412,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         "git": git_state(), "config_sha256": cfg["_meta"]["sha256"], "prompt_hash": prompts.PROMPT_HASH,
         "chat_template_sha256": cfg["model"]["chat_template_sha256"], "server_url": base,
         "server_wait_s": round(waited, 1), **facts, "pilot": args.pilot, "overrides": overrides,
+        "checkpoint": checkpoint,
         "container": {"image": cfg["container"]["image"], "sif_path": os.environ.get("SGLANG_SIF"),
                       "pinned_sglang_version": cfg["container"]["sglang_version"]},
         "n_questions": n_q, "samples_per_question": n_samples, "max_new_tokens": max_new,
@@ -422,7 +457,8 @@ def main(argv: list[str] | None = None) -> int:
           f"{n_q} questions x {n_samples} samples x {len(cfg['prompt']['modes'])} modes, "
           f"max_new_tokens={max_new}, concurrency={concurrency}, server {facts.get('sglang_version')}", flush=True)
 
-    static = {"run_id": args.run_id, "model": cfg["model"]["name"], "model_revision": cfg["model"]["revision"],
+    revision = f"trained:{checkpoint['model_sha256']}" if checkpoint else cfg["model"]["revision"]
+    static = {"run_id": args.run_id, "model": cfg["model"]["name"], "model_revision": revision,
               "chat_template_hash": cfg["model"]["chat_template_sha256"][:16], "prompt_hash": prompts.PROMPT_HASH,
               "sglang_version": facts.get("sglang_version"), "slurm_job_id": os.environ.get("SLURM_JOB_ID")}
     n_done = n_err = out_tokens = 0

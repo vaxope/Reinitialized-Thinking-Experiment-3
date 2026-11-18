@@ -53,3 +53,6 @@ export TRAIN_TIME="04:00:00"
 # Setup + training in one job (submit.sh setup-train). 100 steps at an estimated 6-10 min each
 # (unmeasured) + 6 validations + setup = about 11-18 h; 20 h cap. Resubmitting resumes.
 export SETUP_TRAIN_TIME="20:00:00"
+# Trained-model evaluation (submit.sh eval-trained): conversion ~10 min + the control evaluation
+# (control_v1 took 0.94 GPU-hours) with margin. Resubmitting resumes.
+export EVAL_TRAINED_TIME="02:30:00"

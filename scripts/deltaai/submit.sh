@@ -8,6 +8,7 @@
 #         scripts/deltaai/submit.sh slime-setup      [--dry-run]   (weights -> Megatron + round-trip check)
 #         scripts/deltaai/submit.sh train            [--dry-run]   (GRPO run; name/steps from configs/train_reinit.toml)
 #         scripts/deltaai/submit.sh setup-train      [--dry-run]   (slime-setup, then train, in ONE job: one queue wait)
+#         scripts/deltaai/submit.sh eval-trained [STEP|best] [--dry-run]   (trained checkpoint, control evaluation)
 #
 # It reads scripts/deltaai/env.sh (account, partition, time limits), prints exactly what will
 # be requested (1 GPU, time limit, the maximum GPU-hours that limit allows), asks for
@@ -35,7 +36,8 @@ case "$KIND" in
   slime-setup) TIME="${SLIME_SETUP_TIME:-00:45:00}"; SCRIPT=scripts/deltaai/slime_setup.sbatch; JOB_ARGS=() ;;
   train)       TIME="${TRAIN_TIME:-04:00:00}";       SCRIPT=scripts/deltaai/train_reinit.sbatch; JOB_ARGS=() ;;
   setup-train) TIME="${SETUP_TRAIN_TIME:-20:00:00}"; SCRIPT=scripts/deltaai/setup_and_train.sbatch; JOB_ARGS=() ;;
-  *) echo "usage: $0 smoke|pilot [RUN_ID]|full [RUN_ID]|build-slime|slime-setup|train|setup-train [--dry-run]"; exit 2 ;;
+  eval-trained) TIME="${EVAL_TRAINED_TIME:-02:30:00}"; SCRIPT=scripts/deltaai/eval_trained.sbatch; JOB_ARGS=("${2:-best}") ;;
+  *) echo "usage: $0 smoke|pilot [RUN_ID]|full [RUN_ID]|build-slime|slime-setup|train|setup-train|eval-trained [STEP] [--dry-run]"; exit 2 ;;
 esac
 for v in DELTAAI_ACCOUNT DELTAAI_PARTITION; do
   case "${!v:-}" in ""|"<"*) echo "$v is not set in scripts/deltaai/env.sh"; exit 1 ;; esac
@@ -53,6 +55,7 @@ case "$KIND" in
   slime-setup) DESC="convert the model to Megatron format + round-trip weight check" ;;
   train)       DESC="GRPO training (configs/train_reinit.toml: run name and number of steps)" ;;
   setup-train) DESC="setup (skipped if already passed), then GRPO training, in one job" ;;
+  eval-trained) DESC="convert + check checkpoint '${JOB_ARGS[0]}', then the control evaluation (198 x 4 x 3 modes)" ;;
   *) DESC="${JOB_ARGS[*]}" ;;
 esac
 echo "Job:       $KIND ($DESC)"

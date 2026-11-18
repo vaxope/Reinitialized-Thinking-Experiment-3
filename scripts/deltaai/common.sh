@@ -23,7 +23,9 @@ if [ -z "${CONTAINER_EXEC+x}" ]; then
   # builder links with $CXX, so startup failed with "CC: not found" (smoke job 3611226). Point
   # both at the container's own compilers (/usr/bin/gcc, /usr/bin/g++). This changes how
   # kernels are built, not what they compute.
-  CONTAINER=(apptainer exec --nv --env CC=gcc,CXX=g++ --bind "$REPO_DIR" --bind "$HF_HOME" "$SGLANG_SIF")
+  # EVAL_MODEL_DIR (trained-model evaluation, eval_trained.sbatch): that folder is bound too.
+  CONTAINER=(apptainer exec --nv --env CC=gcc,CXX=g++ --bind "$REPO_DIR" --bind "$HF_HOME"
+             ${EVAL_MODEL_DIR:+--bind "$EVAL_MODEL_DIR"} "$SGLANG_SIF")
 else
   read -r -a CONTAINER <<< "$CONTAINER_EXEC"
 fi
