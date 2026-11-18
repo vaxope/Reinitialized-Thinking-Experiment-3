@@ -83,7 +83,6 @@ attention_softmax_in_fp32 = true
 # The training-data build this run uses (configs/train_data.toml [output] dir).
 source_dir = "data/train/supergpqa_pcb_v1"
 # Which prompt the questions are posed in | "reinit" | the experiment (user, 2026-11-15).
-# The matched control run (user, 2026-11-17) uses "default" with everything else identical.
 prompt_mode = "reinit"
 # Option shuffle for training questions: seed string "<salt>|<qid>|0" (src/prompts.shuffle_seed).
 # One fixed order per question, shared by its 8 answers (GRPO compares answers to the SAME
