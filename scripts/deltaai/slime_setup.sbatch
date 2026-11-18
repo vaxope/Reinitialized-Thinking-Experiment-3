@@ -16,7 +16,9 @@
 #      silently, so a flag it doesn't know, or a value it changes, would otherwise only show up
 #      as a wrong setting in a paid training run. Needs the converted copy from step 2 (--ref-load).
 # Output: $SLIME_CKPT_DIR/<model>_<rev>_torch_dist (about 5 GB). Never overwritten: if it exists,
-# the job stops (delete it yourself to redo the conversion).
+# the job stops (delete it yourself to redo the conversion). On success it also writes the marker
+# <that folder>.setup_pass (job, git, date): training refuses a Megatron copy without it, so a
+# half-finished conversion is never trained on (setup_and_train.sbatch skips setup when it exists).
 #SBATCH --job-name=gar-slime-setup
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -68,4 +70,5 @@ S python3 -m src.train_args --hf-checkpoint "$HF_SNAPSHOT" --ref-load "$REF_DIR"
 echo "[setup] training flags built ($(wc -l < "runs/$RUN_NAME/slime_args_setup.txt") lines, runs/$RUN_NAME/slime_args_setup.txt)"
 S env GAR_TRAIN_CONFIG="$REPO_DIR/configs/train_reinit.toml" PYTHONPATH="/opt/Megatron-LM" \
   python3 scripts/deltaai/check_slime_args.py "runs/$RUN_NAME/slime_args_setup.txt"
-echo "[setup] $(date -u +%FT%TZ) PASS"
+echo "job ${SLURM_JOB_ID:-local} | git $(git rev-parse --short HEAD) | $(date -u +%FT%TZ)" > "$REF_DIR.setup_pass"
+echo "[setup] $(date -u +%FT%TZ) PASS (marker $REF_DIR.setup_pass)"

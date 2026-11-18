@@ -50,3 +50,6 @@ export BUILD_SLIME_TIME="03:30:00"
 export SLIME_SETUP_TIME="00:45:00"
 # Training: set from the pilot's measured step time (the 25-step pilot: about 2-3 h projected).
 export TRAIN_TIME="04:00:00"
+# Setup + training in one job (submit.sh setup-train). 100 steps at an estimated 6-10 min each
+# (unmeasured) + 6 validations + setup = about 11-18 h; 20 h cap. Resubmitting resumes.
+export SETUP_TRAIN_TIME="20:00:00"

@@ -7,6 +7,7 @@
 #         scripts/deltaai/submit.sh build-slime      [--dry-run]   (slime training image, build_slime.sbatch)
 #         scripts/deltaai/submit.sh slime-setup      [--dry-run]   (weights -> Megatron + round-trip check)
 #         scripts/deltaai/submit.sh train            [--dry-run]   (GRPO run; name/steps from configs/train_reinit.toml)
+#         scripts/deltaai/submit.sh setup-train      [--dry-run]   (slime-setup, then train, in ONE job: one queue wait)
 #
 # It reads scripts/deltaai/env.sh (account, partition, time limits), prints exactly what will
 # be requested (1 GPU, time limit, the maximum GPU-hours that limit allows), asks for
@@ -33,7 +34,8 @@ case "$KIND" in
   build-slime) TIME="${BUILD_SLIME_TIME:-03:30:00}"; SCRIPT=scripts/deltaai/build_slime.sbatch; JOB_ARGS=() ;;
   slime-setup) TIME="${SLIME_SETUP_TIME:-00:45:00}"; SCRIPT=scripts/deltaai/slime_setup.sbatch; JOB_ARGS=() ;;
   train)       TIME="${TRAIN_TIME:-04:00:00}";       SCRIPT=scripts/deltaai/train_reinit.sbatch; JOB_ARGS=() ;;
-  *) echo "usage: $0 smoke|pilot [RUN_ID]|full [RUN_ID]|build-slime|slime-setup|train [--dry-run]"; exit 2 ;;
+  setup-train) TIME="${SETUP_TRAIN_TIME:-20:00:00}"; SCRIPT=scripts/deltaai/setup_and_train.sbatch; JOB_ARGS=() ;;
+  *) echo "usage: $0 smoke|pilot [RUN_ID]|full [RUN_ID]|build-slime|slime-setup|train|setup-train [--dry-run]"; exit 2 ;;
 esac
 for v in DELTAAI_ACCOUNT DELTAAI_PARTITION; do
   case "${!v:-}" in ""|"<"*) echo "$v is not set in scripts/deltaai/env.sh"; exit 1 ;; esac
@@ -50,6 +52,7 @@ case "$KIND" in
   build-slime) DESC="build the slime training image (compiles on 64 CPUs; holds 1 GPU, the billing unit)" ;;
   slime-setup) DESC="convert the model to Megatron format + round-trip weight check" ;;
   train)       DESC="GRPO training (configs/train_reinit.toml: run name and number of steps)" ;;
+  setup-train) DESC="setup (skipped if already passed), then GRPO training, in one job" ;;
   *) DESC="${JOB_ARGS[*]}" ;;
 esac
 echo "Job:       $KIND ($DESC)"

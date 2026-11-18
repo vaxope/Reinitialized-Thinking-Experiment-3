@@ -37,6 +37,9 @@ slime_paths
 RUN_DIR="runs/$RUN_NAME"
 SAVE_DIR="$SLIME_CKPT_DIR/$RUN_NAME"
 if [ ! -d "$REF_DIR" ]; then echo "[train] $REF_DIR missing: run submit.sh slime-setup first"; exit 1; fi
+if [ ! -f "$REF_DIR.setup_pass" ]; then
+  echo "[train] $REF_DIR has no setup_pass marker: the setup job did not finish its checks"; exit 1
+fi
 mkdir -p "$RUN_DIR/rollouts" "$SAVE_DIR"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 
