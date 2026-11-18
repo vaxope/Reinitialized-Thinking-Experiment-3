@@ -19,18 +19,18 @@ CFG = {"eval": {"interval": 20}, "checkpoint": {"save_interval": 20}}
 
 
 # ---------------------------------------------------------------- pick_checkpoint
-def _rec(t, split, correct, rid=None, qid="q"):
-    return {"time": t, "split": split, "rollout_id": rid, "correct": correct, "lenient_correct": correct,
-            "truncated": False, "n_output_tokens": 100, "qid": qid}
+def _rec(t, split, correct, version=None, qid="q"):
+    return {"time": t, "split": split, "weight_versions": [] if version is None else [str(version)],
+            "correct": correct, "lenient_correct": correct, "truncated": False, "n_output_tokens": 100, "qid": qid}
 
 
 def _log(accs, with_ids=True, n_val=4):
     """Validation passes with the given accuracies (pass 0 = before training), training in between."""
     recs, t = [], 0
     for k, acc in enumerate(accs):
-        rid = 0 if k == 0 else 20 * k - 1
+        version = 20 * k + 1          # weights after 20k updates (the first push is version 1)
         for i in range(n_val):
-            recs.append(_rec(t, "eval", i < acc * n_val, rid if with_ids else None, qid=f"v{i}")); t += 1
+            recs.append(_rec(t, "eval", i < acc * n_val, version if with_ids else None, qid=f"v{i}")); t += 1
         if k < len(accs) - 1:
             for _ in range(3):
                 recs.append(_rec(t, "train", True)); t += 1
@@ -52,14 +52,14 @@ def test_pick_best_validation_ties_go_to_later_step_and_baseline_never_chosen():
     assert best["step"] == 60   # 0.75 at steps 40 and 60 -> the later; the 1.0 baseline is not a checkpoint
 
 
-def test_pick_without_rollout_ids_uses_time_order():
+def test_pick_without_weight_versions_uses_time_order():
     rows = pick_checkpoint.build_table(_log([0.0, 0.25, 0.5], with_ids=False), CFG)
     assert [(r["step"], r["iter"]) for r in rows] == [(0, None), (20, "iter_0000019"), (40, "iter_0000039")]
 
 
 def test_pick_requested_step_missing_checkpoint_and_incomplete_pass():
     recs = _log([0.0, 0.5, 0.75])
-    recs += [_rec(10_000, "eval", True, 59, qid="v0")]          # a pass cut off by a time limit
+    recs += [_rec(10_000, "eval", True, 61, qid="v0")]          # a pass cut off by a time limit (after 60)
     rows = pick_checkpoint.build_table(recs, CFG)
     assert rows[-1]["step"] == 60 and not rows[-1]["complete"]
     assert pick_checkpoint.choose(rows, _ckpts([20, 40, 60]), None)["step"] == 40   # incomplete never chosen
