@@ -52,7 +52,7 @@ def test_confirmed_parameter_sheet_reaches_slime():
         "--rollout-temperature": "1.0", "--rollout-top-p": "0.95", "--rollout-top-k": "20",
         "--eval-temperature": "1.0", "--eval-top-p": "0.95", "--eval-top-k": "20",
         "--actor-num-gpus-per-node": "1", "--attention-dropout": "0.0", "--hidden-dropout": "0.0",
-        "--save-interval": "20", "--eval-interval": "20", "--num-rollout": "100",
+        "--save-interval": "10", "--eval-interval": "10", "--num-rollout": "100",
     }
     for flag, want in expected.items():
         assert value(f, flag) == want, (flag, value(f, flag), want)

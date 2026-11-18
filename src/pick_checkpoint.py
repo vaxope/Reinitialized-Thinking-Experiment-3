@@ -34,6 +34,8 @@ from pathlib import Path
 
 from src.train_args import DEFAULT_TRAIN_CONFIG, load_train_config
 
+TRACKER = "latest_checkpointed_iteration.txt"   # Megatron's "last finished save" file
+
 
 def read_records(rollout_dir: Path) -> list[dict]:
     """Every logged answer, oldest first (only the fields needed here, to keep memory small)."""
@@ -111,6 +113,12 @@ def choose(rows: list[dict], ckpt_dir: Path | None, step: int | None) -> dict:
     cands = [r for r in rows if r["iter"] is not None and r["complete"]]
     if ckpt_dir is not None:
         cands = [r for r in cands if (Path(ckpt_dir) / r["iter"]).is_dir()]
+        # Megatron writes latest_checkpointed_iteration.txt only after a save finished; a folder
+        # newer than it may be a save cut off by the time budget, so it is never chosen.
+        tracker = Path(ckpt_dir) / TRACKER
+        if tracker.is_file():
+            latest = int(tracker.read_text().strip())
+            cands = [r for r in cands if r["step"] - 1 <= latest]
     if step is not None:
         cands = [r for r in cands if r["step"] == step]
         if not cands:

@@ -5,10 +5,13 @@
 # src/train_args.py wrote. Private = its own temp folder and free ports: a 1-GPU job shares its
 # node with other jobs, and slime connects to "whatever Ray cluster it finds" (it never calls
 # ray.init itself), so a default-port Ray could belong to someone else.
-# Args: <flags file> <ray temp dir> <ray port> <num gpus> <num cpus>
+# Args: <flags file> <ray temp dir> <ray port> <num gpus> <num cpus> [<time budget s, 0 = none>]
+# Time budget: train.py gets SIGTERM after that many seconds (coreutils `timeout`, sent to its
+# whole process group), SIGKILL 120 s later if still alive; then Ray is stopped as usual. Exit
+# code 124 (or 137) then means "budget reached", not a crash. Checkpoints already saved are kept.
 # Env (set by train_reinit.sbatch): GAR_TRAIN_CONFIG, GAR_ROLLOUT_LOG_DIR, REPO_DIR.
 set -euo pipefail
-FLAGS_FILE="$1"; RAY_TMP="$2"; RAY_PORT="$3"; NUM_GPUS="$4"; NUM_CPUS="$5"
+FLAGS_FILE="$1"; RAY_TMP="$2"; RAY_PORT="$3"; NUM_GPUS="$4"; NUM_CPUS="$5"; BUDGET_S="${6:-0}"
 mapfile -t FLAGS < "$FLAGS_FILE"
 
 # Environment the Ray workers inherit (they are started by this Ray instance):
@@ -26,4 +29,9 @@ export RAY_ADDRESS="127.0.0.1:$RAY_PORT"
 
 echo "[train] slime train.py with ${#FLAGS[@]} flag tokens from $FLAGS_FILE"
 cd /opt/slime
-python3 train.py "${FLAGS[@]}"
+if [ "$BUDGET_S" -gt 0 ]; then
+  echo "[train] time budget: $BUDGET_S s ($((BUDGET_S / 60)) min), then training stops"
+  timeout --signal=TERM --kill-after=120 "$BUDGET_S" python3 train.py "${FLAGS[@]}"
+else
+  python3 train.py "${FLAGS[@]}"
+fi

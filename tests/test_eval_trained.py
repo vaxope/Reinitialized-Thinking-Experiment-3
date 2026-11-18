@@ -72,6 +72,13 @@ def test_pick_requested_step_missing_checkpoint_and_incomplete_pass():
         raise AssertionError("expected refusal")
 
 
+def test_pick_skips_a_save_newer_than_megatrons_tracker():
+    rows = pick_checkpoint.build_table(_log([0.0, 0.25, 0.75]), CFG)
+    d = _ckpts([20, 40])
+    (d / "latest_checkpointed_iteration.txt").write_text("19\n")   # the step-40 save never finished
+    assert pick_checkpoint.choose(rows, d, None)["step"] == 20
+
+
 def test_pick_refuses_mismatched_intervals():
     try:
         pick_checkpoint.build_table(_log([0.0]), {"eval": {"interval": 20}, "checkpoint": {"save_interval": 10}})

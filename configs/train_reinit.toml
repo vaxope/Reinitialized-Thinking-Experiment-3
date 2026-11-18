@@ -27,8 +27,9 @@ seed = 1234
 # so a trained model can be evaluated by 2026-11-19; the first steps are watched as the pilot
 # (step time, rewards, validation at step 0) and the job is cancelled if anything is wrong.
 # 100 steps = 1,600 questions, about 29% of one epoch (5,433 / 16 = 340 steps). Checkpoints and
-# validation every 20 steps, so steps 20/40/60/80 survive a time limit. Once the run has
-# started, a different value means a new run name.
+# validation every 10 steps ([eval], [checkpoint]). The job may stop training earlier on its time
+# budget ([job]); the steps done by then are what is evaluated. Once the run has started, a
+# different value means a new run name.
 num_steps = 100
 
 [model]
@@ -175,17 +176,22 @@ clip_grad = 1.0               # gradient norm clip
 
 [eval]
 # Validation on the held-out SuperGPQA slice (300 questions; GPQA is never used here).
-# Every 20 steps and before step 1, 1 answer per question, same sampling and limit as training.
-interval = 20
+# Every 10 steps and before step 1, 1 answer per question, same sampling and limit as training.
+# 10 (user, 2026-11-17; was 20): training may stop on the job's time budget, and a checkpoint is
+# only chosen if its validation pass is complete, so a shorter interval loses fewer steps. Cost:
+# about 5 min per pass (300 answers). Must equal [checkpoint] save_interval.
+interval = 10
 n_samples_per_prompt = 1
 max_response_len = 32768
 # Name under which slime reports it (`--eval-prompt-data <name> <path>`).
 name = "supergpqa_val"
 
 [checkpoint]
-# Save every 20 steps, the same steps as validation, so the checkpoint chosen by validation
+# Save every 10 steps, the same steps as validation, so the checkpoint chosen by validation
 # accuracy exists on disk. Chosen checkpoint = highest validation v3 accuracy (ties -> later).
-save_interval = 20
+# Disk: each save holds weights + optimizer state (estimated ~28 GB); /projects/bgss had
+# ~437 GB free on 2026-11-17.
+save_interval = 10
 
 [hardware]
 # 1 GH200; training and generation share it, taking turns (slime --colocate, which also turns
@@ -208,3 +214,16 @@ log_probs_chunk_size = 1024
 recompute_granularity = "full"
 recompute_method = "uniform"
 recompute_num_layers = 1
+
+[job]
+# How the Slurm job spends its time (user, 2026-11-17, for the 2026-11-19 deadline). Read by
+# scripts/deltaai/train_reinit.sbatch, not by slime.
+# Train until this many minutes are left in the job, then stop training (checkpoints already
+# saved are kept) | 135 | conversion ~10 min + SGLang start ~5 min + the 3-mode GPQA evaluation
+# (control_v1: 0.94 GPU-hours) + scoring, with margin.
+eval_reserve_min = 135
+# Then evaluate the best saved checkpoint in the same job (scripts/deltaai/eval_trained.sbatch),
+# so the evaluation does not wait in the queue again | true.
+eval_after_training = true
+# Do not start training with less than this many minutes of budget (the setup alone takes ~30).
+min_train_min = 30
