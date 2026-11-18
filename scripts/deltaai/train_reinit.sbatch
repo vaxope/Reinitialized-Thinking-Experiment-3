@@ -59,15 +59,29 @@ RESERVE_MIN="$(cfg_value configs/train_reinit.toml job eval_reserve_min)"
 MIN_TRAIN_MIN="$(cfg_value configs/train_reinit.toml job min_train_min)"
 BUDGET_S=0
 if [ "$EVAL_AFTER" = "True" ]; then
-  END="$(squeue -h -j "${SLURM_JOB_ID:-none}" -o %e 2>/dev/null || true)"   # job end time, e.g. 2026-11-19T09:44:10
-  if END_S="$(date -d "$END" +%s 2>/dev/null)"; then
+  # The job's end time, from the first source that answers (it includes any `scontrol update` of
+  # the limit while the job was pending): Slurm's SLURM_JOB_END_TIME (epoch seconds, set at job
+  # start in recent Slurm), else squeue's %e, else scontrol's EndTime (both like 2026-11-19T09:44:10).
+  # (an empty answer is skipped: GNU `date -d ""` would mean "today 00:00")
+  END_S=""
+  if [[ "${SLURM_JOB_END_TIME:-}" =~ ^[0-9]+$ ]]; then END_S="$SLURM_JOB_END_TIME"; fi
+  if [ -z "$END_S" ]; then
+    END="$(squeue -h -j "${SLURM_JOB_ID:-none}" -o %e 2>/dev/null || true)"
+    if [ -n "$END" ]; then END_S="$(date -d "$END" +%s 2>/dev/null || true)"; fi
+  fi
+  if [ -z "$END_S" ]; then
+    END="$(scontrol show job "${SLURM_JOB_ID:-none}" 2>/dev/null | grep -o 'EndTime=[^ ]*' | cut -d= -f2 || true)"
+    if [ -n "$END" ]; then END_S="$(date -d "$END" +%s 2>/dev/null || true)"; fi
+  fi
+  END="unknown"; if [ -n "$END_S" ]; then END="$(date -u -d "@$END_S" +%FT%TZ 2>/dev/null || echo unknown)"; fi
+  if [ -n "$END_S" ] && [ "$END_S" -gt "$(date +%s)" ]; then
     BUDGET_S=$(( END_S - $(date +%s) - RESERVE_MIN * 60 ))
     echo "[train] job ends $END; training budget $((BUDGET_S / 60)) min, then $RESERVE_MIN min for the evaluation"
     if [ "$BUDGET_S" -lt $(( MIN_TRAIN_MIN * 60 )) ]; then
       echo "[train] less than $MIN_TRAIN_MIN min of budget: not training; submit a longer job"; exit 1
     fi
   else
-    echo "[train] WARNING: could not read the job's end time ('$END'): training without a budget, no evaluation in this job"
+    echo "[train] WARNING: could not read the job's end time ($END): training without a budget, no evaluation in this job"
     EVAL_AFTER="False"
   fi
 fi
@@ -88,7 +102,8 @@ if [ "$EVAL_AFTER" != "True" ]; then exit 0; fi
 
 # ---- free the GPU: SGLang/Ray processes that outlived train.py would block the evaluation server
 for _ in $(seq 1 36); do
-  LEFT="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr -d ' ')"
+  # only numeric PIDs count (some driver versions print a "No running processes" line instead)
+  LEFT="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr -d ' ' | grep -E '^[0-9]+$' || true)"
   [ -z "$LEFT" ] && break
   sleep 5
 done
