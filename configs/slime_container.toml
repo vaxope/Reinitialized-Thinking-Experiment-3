@@ -85,4 +85,6 @@ fakeroot_test_image = "busybox:1.36.1"
 sif_name = "slime-79aa41a-sglang0.5.21-gh200.sif"
 # SHA-256 of the built .sif | empty until the first successful build prints it; copy it here
 # (as with configs/control.toml [container] sif_sha256). Training refuses a different file.
-sif_sha256 = ""
+# Build job 3620006 (2026-11-17, 130 min, 13 GB). Its GPU check passed 6/7; the 7th failed in the
+# check's own reference (fla's recurrent kernel has no backward), fixed and re-run in setup.
+sif_sha256 = "3aff7962b599ae64f59b83041ed7e9bc73c7116764c59cb3964603c98d1beac2"

@@ -9,9 +9,12 @@ Purpose : catch a broken GPU stack before any paid training job: the parts of th
             2. TransformerEngine: te.pytorch.Linear forward + backward = torch matmul.
             3. flash-linear-attention, exactly as Qwen3.5's linear-attention layers call it in
                training (slime_plugins/models/qwen3_5.py Qwen3_5GatedDeltaNet):
-               a. chunk_gated_delta_rule (the fast kernel) = fused_recurrent_gated_delta_rule
-                  (fla's step-by-step version), on two packed sequences of different lengths
-                  (cu_seqlens), with use_qk_l2norm_in_kernel=True; outputs and all gradients;
+               a. chunk_gated_delta_rule (the fast kernel training uses) = a plain-PyTorch
+                  step-by-step version of the same recurrence (gated_delta_rule_reference below,
+                  autograd for the gradients), on two packed sequences of different lengths
+                  (cu_seqlens), with use_qk_l2norm_in_kernel=True; outputs and all gradients.
+                  (fla's own fused_recurrent_gated_delta_rule has no backward pass in fla 0.5.2,
+                  build job 3620006, so it cannot be the gradient reference.)
                b. ShortConvolution (causal depthwise conv + SiLU, varlen) = torch conv1d per sequence;
                c. FusedRMSNormGated (RMSNorm * weight * SiLU(gate)) = the plain formula.
             4. torch_memory_saver imports (it is exercised for real in the first training step).
@@ -90,8 +93,32 @@ def cu_seqlens():
     return torch.tensor(bounds, device="cuda", dtype=torch.long)
 
 
+def gated_delta_rule_reference(q, k, v, g, beta):
+    """The gated delta rule, one token at a time, in fp32 plain PyTorch (one sequence).
+
+    Shapes: q, k [T, H, K]; v [T, H, V]; g (log decay) and beta [T, H]. Same definition as fla's
+    test reference (fla tests/ops/test_gated_delta.py, recurrent_gated_delta_rule_ref):
+      q, k <- l2-normalised over K (use_qk_l2norm_in_kernel=True); q <- q * K**-0.5 (fla's default scale)
+      S <- S * exp(g_t)                       state S [H, K, V], decayed
+      u <- beta_t * (v_t - S^T k_t)           delta-rule correction
+      S <- S + k_t u^T;   o_t = S^T q_t
+    """
+    q, k, v, g, beta = (x.float() for x in (q, k, v, g, beta))
+    q = torch.nn.functional.normalize(q, dim=-1) * q.shape[-1] ** -0.5
+    k = torch.nn.functional.normalize(k, dim=-1)
+    T, H, K = k.shape
+    S = torch.zeros(H, K, v.shape[-1], device=q.device, dtype=torch.float32)
+    out = []
+    for t in range(T):
+        S = S * g[t].exp()[:, None, None]
+        u = beta[t][:, None] * (v[t] - torch.einsum("hk,hkv->hv", k[t], S))
+        S = S + k[t][:, :, None] * u[:, None, :]
+        out.append(torch.einsum("hk,hkv->hv", q[t], S))
+    return torch.stack(out)
+
+
 def check_fla_gated_delta_rule():
-    from fla.ops.gated_delta_rule import chunk_gated_delta_rule, fused_recurrent_gated_delta_rule
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
     T, H, K, dev, dt = sum(SEQ_LENS), HEADS, HEAD_DIM, "cuda", torch.bfloat16
 
     def inputs():
@@ -104,17 +131,18 @@ def check_fla_gated_delta_rule():
         beta = torch.randn(1, T, H, device=dev, dtype=dt).sigmoid()
         return [t.requires_grad_(True) for t in (q, k, v, g, beta)]
 
-    cu = cu_seqlens()
-    a, b = inputs(), inputs()
+    a, b = inputs(), inputs()   # identical values; separate leaves so each side has its own .grad
     o_chunk, _ = chunk_gated_delta_rule(*a[:3], g=a[3], beta=a[4], initial_state=None, output_final_state=False,
-                                        use_qk_l2norm_in_kernel=True, cu_seqlens=cu)
-    o_ref, _ = fused_recurrent_gated_delta_rule(*b[:3], g=b[3], beta=b[4], initial_state=None,
-                                                output_final_state=False, use_qk_l2norm_in_kernel=True,
-                                                cu_seqlens=cu)
+                                        use_qk_l2norm_in_kernel=True, cu_seqlens=cu_seqlens())
+    refs, start = [], 0
+    for n in SEQ_LENS:   # packed sequences are independent: the state starts at zero in each
+        refs.append(gated_delta_rule_reference(*(x[0, start:start + n] for x in b)))
+        start += n
+    o_ref = torch.cat(refs).unsqueeze(0)
     o_chunk.float().sum().backward()
-    o_ref.float().sum().backward()
+    o_ref.sum().backward()
     errs = [rel_err(o_chunk, o_ref)] + [rel_err(x.grad, y.grad) for x, y in zip(a, b)]
-    return report("fla chunk_gated_delta_rule vs recurrent (varlen, qk l2norm)", max(errs) < FLA_MAX_REL_ERR,
+    return report("fla chunk_gated_delta_rule vs PyTorch reference (varlen, qk l2norm)", max(errs) < FLA_MAX_REL_ERR,
                   f"rel. errors out/dq/dk/dv/dg/dbeta = {[f'{e:.1e}' for e in errs]}")
 
 

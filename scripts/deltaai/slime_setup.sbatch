@@ -3,7 +3,9 @@
 #
 # Submit through submit.sh:   scripts/deltaai/submit.sh slime-setup
 # Steps:
-#   1. check the slime image is the recorded one (SHA-256);
+#   1. check the slime image is the recorded one (SHA-256), then run its GPU check
+#      (scripts/deltaai/check_slime_gpu.py, ~1-2 min; the build job runs it too, but build job
+#      3620006's run had a broken reference in the check itself, so it is repeated here);
 #   2. convert the pinned Qwen3.5-2B Hugging Face weights into Megatron format with slime's
 #      tools/convert_hf_to_torch_dist.py, using EXACTLY the architecture flags training uses
 #      (src/train_args.py --model-args, checked against the model's config.json). This copy is
@@ -35,6 +37,7 @@ echo "[setup] $(date -u +%FT%TZ) host $(hostname) | git $(git rev-parse --short 
 
 # ---- 1
 check_slime_sif
+S python3 scripts/deltaai/check_slime_gpu.py
 slime_paths
 echo "[setup] model $HF_SNAPSHOT"
 echo "[setup] Megatron copy -> $REF_DIR"
