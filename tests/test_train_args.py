@@ -73,6 +73,17 @@ def test_gradient_accumulation_fusion_off_in_conversion_and_training():
     assert "--no-gradient-accumulation-fusion" not in model_args(on)
 
 
+def test_rollout_attention_kernels_are_pinned_to_the_controls():
+    """Smoke job 3633318: unpinned, SGLang chose FA3, which the arm64 image lacks. The rollouts must
+    use the control run's kernels, and a config that differs from control.toml is refused."""
+    f = build_args(CFG, PATHS)
+    assert value(f, "--sglang-attention-backend") == CONTROL["server"]["attention_backend"] == "flashinfer"
+    assert value(f, "--sglang-mm-attention-backend") == CONTROL["server"]["mm_attention_backend"] == "triton_attn"
+    assert expected_resolved(CFG)["sglang_attention_backend"] == "flashinfer"
+    bad = copy.deepcopy(CFG); bad["hardware"]["sglang_attention_backend"] = "fa3"
+    assert raises(check_against_control, bad, CONTROL)
+
+
 def test_norm_epsilon_is_checked_under_megatrons_attribute_name():
     """Setup job 3631176: Megatron ae76c60e stores --norm-epsilon as args.layernorm_epsilon, so the
     check must expect that attribute (with the config's value), not a non-existent norm_epsilon."""

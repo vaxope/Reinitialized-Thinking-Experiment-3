@@ -89,6 +89,7 @@ REQUIRED = {
     "eval": ["interval", "n_samples_per_prompt", "max_response_len", "name"],
     "checkpoint": ["save_interval"],
     "hardware": ["num_gpus", "rollout_num_gpus_per_engine", "sglang_mem_fraction_static",
+                 "sglang_attention_backend", "sglang_mm_attention_backend",
                  "max_tokens_per_gpu", "log_probs_chunk_size", "recompute_granularity",
                  "recompute_method", "recompute_num_layers"],
 }
@@ -121,6 +122,11 @@ def check_against_control(cfg: dict, control: dict) -> None:
             raise ValueError(f"[model] {key} differs from configs/control.toml")
     if cfg["model"]["hf_repo"] != control["model"]["name"]:
         raise ValueError("[model] hf_repo differs from configs/control.toml [model] name")
+    # the same attention kernels as the control run / GPQA evaluation (smoke job 3633318)
+    for key in ("attention_backend", "mm_attention_backend"):
+        if cfg["hardware"]["sglang_" + key] != control["server"][key]:
+            raise ValueError(f"[hardware] sglang_{key} = {cfg['hardware']['sglang_' + key]!r} differs from "
+                             f"configs/control.toml [server] {key} = {control['server'][key]!r}")
 
 
 def check_plain_grpo(cfg: dict) -> None:
@@ -208,6 +214,8 @@ def build_args(cfg: dict, paths: dict) -> list[str]:
     a.append("--colocate")
     opt("--rollout-num-gpus-per-engine", hw["rollout_num_gpus_per_engine"])
     opt("--sglang-mem-fraction-static", hw["sglang_mem_fraction_static"])
+    opt("--sglang-attention-backend", hw["sglang_attention_backend"])          # not SGLang's FA3 default
+    opt("--sglang-mm-attention-backend", hw["sglang_mm_attention_backend"])
 
     # -- model architecture (slime scripts/models/qwen3.5-*.sh format)
     a += model_args(cfg)
@@ -340,6 +348,8 @@ def expected_resolved(cfg: dict) -> dict:
         # memory
         "max_tokens_per_gpu": hw["max_tokens_per_gpu"], "log_probs_chunk_size": hw["log_probs_chunk_size"],
         "sglang_mem_fraction_static": hw["sglang_mem_fraction_static"],
+        "sglang_attention_backend": hw["sglang_attention_backend"],
+        "sglang_mm_attention_backend": hw["sglang_mm_attention_backend"],
         "accumulate_allreduce_grads_in_fp32": nu["accumulate_allreduce_grads_in_fp32"],
         "attention_softmax_in_fp32": nu["attention_softmax_in_fp32"],
         "gradient_accumulation_fusion": nu["gradient_accumulation_fusion"],

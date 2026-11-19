@@ -210,6 +210,13 @@ rollout_num_gpus_per_engine = 1
 # Share of GPU memory SGLang may take while generating (Megatron is offloaded then) | 0.7 |
 # slime scripts/run-qwen3-4B.sh | TUNE IN THE PILOT.
 sglang_mem_fraction_static = 0.7
+# SGLang attention kernels for the rollouts | flashinfer (text), triton_attn (vision encoder) |
+# MUST equal configs/control.toml [server] (src/train_args.check_against_control refuses
+# otherwise), so rollouts and the GPQA evaluation use the same kernels. Without a pin SGLang picks
+# FlashAttention 3, which the arm64 image does not have: smoke job 3633318 crashed with
+# "Can not import FA3 in sgl_kernel" (the control run hit the same, smoke job 3611059).
+sglang_attention_backend = "flashinfer"
+sglang_mm_attention_backend = "triton_attn"
 # Megatron packs sequences into micro-batches up to this many tokens. Must hold one whole
 # prompt + answer (2,048 + 32,768 = 34,816) because a sequence is never split on 1 GPU |
 # 36,864 = 9 x 4,096, the next multiple of 4,096 above 34,816 | TUNE IN THE PILOT.
