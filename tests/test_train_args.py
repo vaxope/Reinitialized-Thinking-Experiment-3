@@ -13,7 +13,7 @@ from pathlib import Path
 from src.config import load_config
 from src.train_args import (FORBIDDEN_FLAGS, HF_CONFIG_KEYS, _flag_value, build_args, check_against_control,
                             check_flags, check_hf_config, check_plain_grpo, expected_resolved,
-                            load_train_config)
+                            load_train_config, model_args)
 
 CFG = load_train_config()
 CONTROL = load_config()
@@ -58,6 +58,19 @@ def test_confirmed_parameter_sheet_reaches_slime():
         assert value(f, flag) == want, (flag, value(f, flag), want)
     for switch in ("--colocate", "--use-kl-loss", "--rollout-shuffle", "--use-dynamic-batch-size"):
         assert switch in f, switch
+
+
+def test_gradient_accumulation_fusion_off_in_conversion_and_training():
+    """Job 3622008: Megatron's default (fusion on) needs APEX, which the image lacks. The switch
+    must reach BOTH the weight conversion (model_args) and training (build_args), exactly once,
+    and the setup job's check must expect it off."""
+    assert CFG["numerics"]["gradient_accumulation_fusion"] is False
+    for flags in (model_args(CFG), build_args(CFG, PATHS)):
+        assert flags.count("--no-gradient-accumulation-fusion") == 1
+        assert "--gradient-accumulation-fusion" not in flags
+    assert expected_resolved(CFG)["gradient_accumulation_fusion"] is False
+    on = copy.deepcopy(CFG); on["numerics"]["gradient_accumulation_fusion"] = True
+    assert "--no-gradient-accumulation-fusion" not in model_args(on)
 
 
 def test_resume_folder_and_reference_are_wired():

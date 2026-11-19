@@ -70,7 +70,8 @@ REQUIRED = {
     "model": ["hf_repo", "revision", "chat_template_sha256"],
     "megatron_model": ["spec", "flags", "normalization", "position_embedding_type",
                        "attention_dropout", "hidden_dropout", *HF_CONFIG_KEYS],
-    "numerics": ["accumulate_allreduce_grads_in_fp32", "attention_softmax_in_fp32"],
+    "numerics": ["accumulate_allreduce_grads_in_fp32", "attention_softmax_in_fp32",
+                 "gradient_accumulation_fusion"],
     "data": ["source_dir", "prompt_mode", "shuffle_salt", "output_dir", "input_key",
              "label_key", "metadata_key"],
     "reward": ["rule", "correct", "incorrect"],
@@ -167,8 +168,9 @@ def _flag_value(v) -> str:
 
 
 def model_args(cfg: dict) -> list[str]:
-    """The Megatron architecture flags alone. Used by build_args AND by the one-time weight
-    conversion (tools/convert_hf_to_torch_dist.py), so both always describe the same model."""
+    """The flags that build the Megatron model: the architecture, plus the model-building switches
+    that must match our image. Used by build_args AND by the one-time weight conversion
+    (tools/convert_hf_to_torch_dist.py), so both always describe and build the same model."""
     m = cfg["megatron_model"]
     a = ["--spec", *m["spec"], *m["flags"]]
     for key in HF_CONFIG_KEYS:
@@ -176,6 +178,10 @@ def model_args(cfg: dict) -> list[str]:
     a += ["--normalization", m["normalization"], "--position-embedding-type", m["position_embedding_type"],
           "--attention-dropout", _flag_value(m["attention_dropout"]),
           "--hidden-dropout", _flag_value(m["hidden_dropout"])]
+    # Megatron's default is on, and building the model then requires APEX's compiled extension,
+    # which the image lacks (job 3622008). Off = the same gradients, without the fused kernel.
+    if not cfg["numerics"]["gradient_accumulation_fusion"]:
+        a.append("--no-gradient-accumulation-fusion")
     return a
 
 
@@ -312,6 +318,7 @@ def expected_resolved(cfg: dict) -> dict:
         "sglang_mem_fraction_static": hw["sglang_mem_fraction_static"],
         "accumulate_allreduce_grads_in_fp32": nu["accumulate_allreduce_grads_in_fp32"],
         "attention_softmax_in_fp32": nu["attention_softmax_in_fp32"],
+        "gradient_accumulation_fusion": nu["gradient_accumulation_fusion"],
     }
     exp.update({k: o[k] for k in ("optimizer", "lr", "lr_decay_style", "lr_warmup_iters", "adam_beta1",
                                    "adam_beta2", "adam_eps", "weight_decay", "clip_grad")})

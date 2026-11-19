@@ -79,6 +79,14 @@ hidden_dropout = 0.0
 # the algorithm. (slime always trains in bf16 with fp32 master weights; it sets bf16 itself.)
 accumulate_allreduce_grads_in_fp32 = true
 attention_softmax_in_fp32 = true
+# Gradient-accumulation fusion | false | Megatron turns it on by default; it needs APEX's compiled
+# fused_weight_gradient_mlp_cuda extension, which our arm64 image does not have (setup job
+# 3622008 failed on it while building the model, 2026-11-18). It is a speed-up only: gradients
+# are summed the same way, in fp32, without it. slime's own ROCm recipe turns it off for the
+# same reason (docs/en/platform_support/amd_tutorial.md, scripts/run-qwen3-4B-amd.sh @ 79aa41a).
+# Applies to the weight conversion AND training (src/train_args.model_args), which both build
+# the model.
+gradient_accumulation_fusion = false
 
 [data]
 # The training-data build this run uses (configs/train_data.toml [output] dir).
