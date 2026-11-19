@@ -160,19 +160,23 @@ def test_check_trained_extra_lm_head_only_if_tied_and_equal():
 # ---------------------------------------------------------------- generate --checkpoint
 def test_generate_checkpoint_needs_eval_run_id_and_a_checked_folder():
     from src import generate
-    for argv in (["--run-id", "eval_x"], ["--run-id", "smoke_x", "--checkpoint", "/nowhere"]):
+    for argv in (["--run-id", "eval_x"], ["--run-id", "pilot_x", "--checkpoint", "/nowhere"],
+                 ["--run-id", "control_x", "--checkpoint", "/nowhere"], ["--run-id", "x", "--checkpoint", "/nowhere"]):
         try:
             generate.main(argv)
         except SystemExit as e:
             assert "go together" in str(e)
         else:
             raise AssertionError("expected refusal")
-    try:
-        generate.main(["--run-id", "eval_x", "--checkpoint", tempfile.mkdtemp()])
-    except SystemExit as e:
-        assert "Checkpoint refused" in str(e)
-    else:
-        raise AssertionError("expected refusal")
+    # eval_* and (for the smoke run's capped serving test) smoke_* may serve a checked folder;
+    # an unchecked folder is refused either way
+    for run_id in ("eval_x", "smoke_eval_x"):
+        try:
+            generate.main(["--run-id", run_id, "--checkpoint", tempfile.mkdtemp()])
+        except SystemExit as e:
+            assert "Checkpoint refused" in str(e), (run_id, str(e))
+        else:
+            raise AssertionError("expected refusal")
 
 
 def _snapshot():

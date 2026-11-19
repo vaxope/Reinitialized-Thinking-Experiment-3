@@ -13,7 +13,7 @@ from pathlib import Path
 from src.config import load_config
 from src.train_args import (FORBIDDEN_FLAGS, HF_CONFIG_KEYS, _flag_value, build_args, check_against_control,
                             check_flags, check_hf_config, check_plain_grpo, expected_resolved,
-                            load_train_config, model_args)
+                            load_train_config, model_args, smoke_config)
 
 CFG = load_train_config()
 CONTROL = load_config()
@@ -71,6 +71,23 @@ def test_gradient_accumulation_fusion_off_in_conversion_and_training():
     assert expected_resolved(CFG)["gradient_accumulation_fusion"] is False
     on = copy.deepcopy(CFG); on["numerics"]["gradient_accumulation_fusion"] = True
     assert "--no-gradient-accumulation-fusion" not in model_args(on)
+
+
+def test_smoke_config_changes_only_steps_and_intervals():
+    """The smoke run must train exactly like the long run: only the step count, the validation
+    interval, the save interval and the validation file may differ in the flags."""
+    sc = smoke_config(CFG)
+    n = CFG["smoke"]["steps"]
+    assert n >= 2 and CFG["run"]["num_steps"] == 100           # the real config is not modified
+    assert (sc["run"]["num_steps"], sc["eval"]["interval"], sc["checkpoint"]["save_interval"]) == (n, n, n)
+    real, smoke = build_args(CFG, PATHS), build_args(sc, dict(PATHS, eval_data="E16.jsonl"))
+    assert len(real) == len(smoke)
+    flag_of = lambda i: next(real[j] for j in range(i, -1, -1) if real[j].startswith("--"))   # noqa: E731
+    changed = {flag_of(i) for i in range(len(real)) if real[i] != smoke[i]}
+    assert changed == {"--num-rollout", "--eval-interval", "--save-interval", "--eval-prompt-data"}, changed
+    assert value(smoke, "--num-rollout") == str(n) and value(smoke, "--eval-interval") == str(n)
+    bad = copy.deepcopy(CFG); bad["smoke"]["steps"] = 1
+    assert raises(smoke_config, bad)     # step 2 is what tests the weight push
 
 
 def test_resume_folder_and_reference_are_wired():

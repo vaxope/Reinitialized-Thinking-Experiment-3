@@ -22,6 +22,7 @@ Usage   : python3 -m src.train_args --hf-checkpoint DIR --ref-load DIR --save DI
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 import tomllib
@@ -75,6 +76,7 @@ REQUIRED = {
     "data": ["source_dir", "prompt_mode", "shuffle_salt", "output_dir", "input_key",
              "label_key", "metadata_key"],
     "reward": ["rule", "correct", "incorrect"],
+    "smoke": ["steps", "eval_questions", "serve_questions", "serve_max_new_tokens"],
     "sampling": ["temperature", "top_p", "top_k", "min_p", "presence_penalty",
                  "repetition_penalty"],
     "rollout": ["n_samples_per_prompt", "rollout_batch_size", "global_batch_size",
@@ -287,6 +289,21 @@ def build_args(cfg: dict, paths: dict) -> list[str]:
     return a
 
 
+def smoke_config(cfg: dict) -> dict:
+    """The config of the smoke run (scripts/deltaai/smoke_train.sh): the real one with ONLY the step
+    count changed to [smoke] steps, and validation + checkpoint saving at that step, so the run
+    trains, validates (before step 1 and after the last step) and saves exactly once. Everything
+    else (batches, lengths, sampling, GRPO, optimizer, memory) is the real run's."""
+    c = copy.deepcopy(cfg)
+    n = cfg["smoke"]["steps"]
+    if n < 2:
+        raise ValueError("[smoke] steps must be >= 2: step 2 is what tests the weight push to SGLang")
+    c["run"]["num_steps"] = n
+    c["eval"]["interval"] = n
+    c["checkpoint"]["save_interval"] = n
+    return c
+
+
 def expected_resolved(cfg: dict) -> dict:
     """What slime's parsed `args` must hold after it reads build_args' flags: attribute -> value.
 
@@ -339,6 +356,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--ref-load", help="Megatron copy of the start model")
     ap.add_argument("--save", help="checkpoint folder (also used to resume)")
     ap.add_argument("--out", default=None, help="also write the flags here (one per line)")
+    ap.add_argument("--smoke", action="store_true",
+                    help="flags for the smoke run: [smoke] steps, validation and saving at that step")
+    ap.add_argument("--eval-data", default=None,
+                    help="validation file instead of <output_dir>/val.jsonl (the smoke run's short slice)")
     ap.add_argument("--model-args", action="store_true",
                     help="print only the architecture flags (for the weight conversion)")
     args = ap.parse_args(argv)
@@ -354,9 +375,12 @@ def main(argv: list[str] | None = None) -> None:
     check_against_control(cfg, control)
     check_plain_grpo(cfg)
     check_hf_config(cfg, Path(args.hf_checkpoint) / "config.json")
+    if args.smoke:   # after the checks above, which ran on the real config
+        cfg = smoke_config(cfg)
     out_dir = REPO_ROOT / cfg["data"]["output_dir"]
     paths = {"hf_checkpoint": args.hf_checkpoint, "ref_load": args.ref_load, "save": args.save,
-             "prompt_data": out_dir / "train.jsonl", "eval_data": out_dir / "val.jsonl"}
+             "prompt_data": out_dir / "train.jsonl",
+             "eval_data": Path(args.eval_data) if args.eval_data else out_dir / "val.jsonl"}
     for key in ("prompt_data", "eval_data"):
         if not Path(paths[key]).exists():
             sys.exit(f"{paths[key]} not found: run `python3 -m src.train_prep` first")

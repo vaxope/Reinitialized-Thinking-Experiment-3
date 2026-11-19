@@ -102,6 +102,6 @@ def test_scripts_parse():
     bash = shutil.which("bash")
     for name in ("build_slime.sbatch", "submit.sh", "slime_common.sh", "slime_setup.sbatch",
                  "train_reinit.sbatch", "train_inside.sh", "setup_and_train.sbatch",
-                 "eval_trained.sbatch", "common.sh", "serve_and_generate.sh"):
+                 "eval_trained.sbatch", "common.sh", "serve_and_generate.sh", "smoke_train.sh"):
         r = subprocess.run([bash, "-n", str(REPO_ROOT / "scripts" / "deltaai" / name)], capture_output=True, text=True)
         assert r.returncode == 0, (name, r.stderr)

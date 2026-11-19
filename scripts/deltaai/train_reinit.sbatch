@@ -45,6 +45,9 @@ if [ ! -d "$REF_DIR" ]; then echo "[train] $REF_DIR missing: run submit.sh slime
 if [ ! -f "$REF_DIR.setup_pass" ]; then
   echo "[train] $REF_DIR has no setup_pass marker: the setup job did not finish its checks"; exit 1
 fi
+if [ ! -f "$REF_DIR.smoke_pass" ]; then
+  echo "[train] no smoke_pass marker: the 2-step smoke run (scripts/deltaai/smoke_train.sh) has not passed"; exit 1
+fi
 mkdir -p "$RUN_DIR/rollouts" "$SAVE_DIR"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 

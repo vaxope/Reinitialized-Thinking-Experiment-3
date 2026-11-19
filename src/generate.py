@@ -74,6 +74,9 @@ PROGRESS_EVERY = 10        # print a progress line every N finished generations
 # real run can't be accidentally created with non-standard settings.
 PROTECTED_PREFIXES = ("control", "pilot", "eval")
 EVAL_PREFIX = "eval"       # trained-model evaluations (--checkpoint); protected like control runs
+# Trained-checkpoint smoke tests (scripts/deltaai/smoke_train.sh): --checkpoint with a small
+# --limit-questions/--max-new-tokens, so the serving path is tested in minutes. Never "eval".
+SMOKE_CHECKPOINT_PREFIX = "smoke"
 EXIT_ERRORS = 3            # some generations were logged with an error
 EXIT_STALLED = 4           # stall guard: the server stopped producing output (see [generation])
 EXIT_INTERRUPTED = 143     # SIGTERM (128 + 15), Slurm's time limit or scancel
@@ -370,7 +373,8 @@ def parse_args(argv):
     ap.add_argument("--retry-errors", action="store_true", help="re-send keys whose only records are errors")
     ap.add_argument("--concurrency", type=int, default=None, help="override [generation] concurrency (speed only)")
     ap.add_argument("--checkpoint", default=None,
-                    help="trained model folder checked by src.check_trained (run id must start with 'eval')")
+                    help="trained model folder checked by src.check_trained (run id must start with "
+                         "'eval', or 'smoke' for a capped serving test)")
     # Overrides that change WHAT is generated: only for smoke tests, refused for control/pilot runs.
     ap.add_argument("--limit-questions", type=int, default=None)
     ap.add_argument("--samples", type=int, default=None)
@@ -387,7 +391,9 @@ def main(argv: list[str] | None = None) -> int:
                                    ("max_new_tokens", args.max_new_tokens)) if v is not None}
     if overrides and args.run_id.startswith(PROTECTED_PREFIXES):
         sys.exit(f"Overrides {overrides} are not allowed for run id {args.run_id!r}; use e.g. smoke_<id>.")
-    if bool(args.checkpoint) != args.run_id.startswith(EVAL_PREFIX):
+    # an eval run always serves a checkpoint; a checkpoint is served only by an eval or smoke run
+    if args.run_id.startswith(EVAL_PREFIX) and not args.checkpoint or \
+            args.checkpoint and not args.run_id.startswith((EVAL_PREFIX, SMOKE_CHECKPOINT_PREFIX)):
         sys.exit(f"--checkpoint and an {EVAL_PREFIX!r} run id go together (run id {args.run_id!r}, "
                  f"checkpoint {args.checkpoint!r}).")
     checkpoint = None

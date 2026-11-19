@@ -1,5 +1,5 @@
 #!/bin/bash
-# scripts/deltaai/slime_setup.sbatch: one-time setup before training (about 20-30 min, 1 GPU).
+# scripts/deltaai/slime_setup.sbatch: one-time setup before training (about 1-1.5 h with the smoke run, 1 GPU).
 #
 # Submit through submit.sh:   scripts/deltaai/submit.sh slime-setup
 # Steps:
@@ -17,6 +17,9 @@
 #      (scripts/deltaai/check_slime_args.py, seconds): slime drops unknown Megatron flags
 #      silently, so a flag it doesn't know, or a value it changes, would otherwise only show up
 #      as a wrong setting in a paid training run. Needs the converted copy from step 2 (--ref-load).
+#   5. the smoke run (scripts/deltaai/smoke_train.sh, ~40-60 min): 2 real training steps, checkpoint
+#      saved, converted, checked and served with the control image; marker <folder>.smoke_pass.
+#      Training refuses to start without that marker (user, 2026-11-19, after job 3622008).
 # Output: $SLIME_CKPT_DIR/<model>_<rev>_torch_dist (about 5 GB). Never overwritten: if it exists,
 # the job stops (delete it yourself to redo the conversion). On success it also writes the marker
 # <that folder>.setup_pass (job, git, date): training refuses a Megatron copy without it, so a
@@ -25,8 +28,10 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-node=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
+# The training job's resources, because step 5 runs real training (with --colocate the optimizer
+# state is moved to CPU memory while SGLang generates).
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=200G
 #SBATCH --output=runs/_slurm/%x_%j.out
 #SBATCH --constraint=projects
 set -euo pipefail
@@ -75,3 +80,6 @@ S env GAR_TRAIN_CONFIG="$REPO_DIR/configs/train_reinit.toml" PYTHONPATH="/opt/Me
   python3 scripts/deltaai/check_slime_args.py "runs/$RUN_NAME/slime_args_setup.txt"
 echo "job ${SLURM_JOB_ID:-local} | git $(git rev-parse --short HEAD) | $(date -u +%FT%TZ)" > "$REF_DIR.setup_pass"
 echo "[setup] $(date -u +%FT%TZ) PASS (marker $REF_DIR.setup_pass)"
+
+# ---- 5
+bash scripts/deltaai/smoke_train.sh

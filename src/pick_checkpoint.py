@@ -37,7 +37,7 @@ import json
 import sys
 from pathlib import Path
 
-from src.train_args import DEFAULT_TRAIN_CONFIG, load_train_config
+from src.train_args import DEFAULT_TRAIN_CONFIG, load_train_config, smoke_config
 
 TRACKER = "latest_checkpointed_iteration.txt"   # Megatron's "last finished save" file
 
@@ -151,8 +151,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--config", default=DEFAULT_TRAIN_CONFIG)
     ap.add_argument("--step", type=int, default=None, help="take this step instead of the best one")
     ap.add_argument("--shell", action="store_true", help="print only STEP=... ITER_DIR=...")
+    ap.add_argument("--smoke", action="store_true", help="the smoke run's intervals (src.train_args.smoke_config)")
     a = ap.parse_args(argv)
-    rows = build_table(read_records(Path(a.rollouts)), load_train_config(a.config))
+    cfg = load_train_config(a.config)
+    rows = build_table(read_records(Path(a.rollouts)), smoke_config(cfg) if a.smoke else cfg)
     chosen = choose(rows, Path(a.ckpt_dir) if a.ckpt_dir else None, a.step)
     iter_dir = str(Path(a.ckpt_dir) / chosen["iter"]) if a.ckpt_dir else chosen["iter"]
     if a.shell:

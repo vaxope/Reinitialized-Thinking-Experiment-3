@@ -70,7 +70,7 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(3600)
             return self._send(200, {})
         if self.path in ("/get_server_info", "/server_info"):
-            return self._send(200, {"version": "fake-sglang", "model_path": a.model_path, "revision": a.revision,
+            return self._send(200, {"version": a.fake_version, "model_path": a.model_path, "revision": a.revision,
                                     "dtype": a.dtype, "random_seed": a.random_seed,
                                     "attention_backend": a.attention_backend,
                                     "mm_attention_backend": a.mm_attention_backend})
@@ -120,6 +120,7 @@ def main(argv=None):
     ap.add_argument("--random-seed", type=int, default=0)
     ap.add_argument("--attention-backend", default=None)  # reported back, like real SGLang
     ap.add_argument("--mm-attention-backend", default=None)
+    ap.add_argument("--fake-version", default="fake-sglang", help="version to report (e.g. the pinned one)")
     ap.add_argument("--fake-error-every", type=int, default=0)
     ap.add_argument("--fake-latency-s", type=float, default=0.01)
     ap.add_argument("--fake-hang-after", type=int, default=0, help="hang every /generate after the N-th")

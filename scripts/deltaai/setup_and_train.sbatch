@@ -10,7 +10,9 @@
 #      flag check), run as a plain script inside this allocation. Skipped when its marker
 #      <Megatron copy>.setup_pass exists (a resubmission after a time limit doesn't redo it);
 #      stops if the Megatron copy exists WITHOUT the marker (an earlier setup did not finish);
-#   2. training = train_reinit.sbatch unchanged (it re-checks the tree, image and marker).
+#   1b. the smoke run (scripts/deltaai/smoke_train.sh: 2 real training steps, convert, serve),
+#      only if its marker <Megatron copy>.smoke_pass is missing (slime_setup.sbatch runs it too);
+#   2. training = train_reinit.sbatch unchanged (it re-checks the tree, image and both markers).
 # Each step stops the job on failure (set -e), so training never starts after a failed setup.
 # Resources are the training job's (the larger of the two); #SBATCH lines inside the two
 # scripts are plain comments when they run this way.
@@ -44,6 +46,13 @@ else
   T0=$SECONDS
   bash scripts/deltaai/slime_setup.sbatch
   echo "[setup-train] setup took $((SECONDS - T0)) s"
+fi
+
+# ---- 1b
+if [ -f "$REF_DIR.smoke_pass" ]; then
+  echo "[setup-train] smoke run already passed ($(cat "$REF_DIR.smoke_pass")): skipping it"
+else
+  bash scripts/deltaai/smoke_train.sh
 fi
 
 # ---- 2

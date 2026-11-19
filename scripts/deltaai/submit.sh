@@ -33,7 +33,7 @@ case "$KIND" in
   pilot) TIME="${PILOT_TIME:-02:00:00}"; SCRIPT=scripts/deltaai/run_control.sbatch; JOB_ARGS=(--run-id "${2:-pilot_v1}" --pilot) ;;
   full)  TIME="${FULL_TIME:-24:00:00}";  SCRIPT=scripts/deltaai/run_control.sbatch; JOB_ARGS=(--run-id "${2:-control_v1}") ;;
   build-slime) TIME="${BUILD_SLIME_TIME:-03:30:00}"; SCRIPT=scripts/deltaai/build_slime.sbatch; JOB_ARGS=() ;;
-  slime-setup) TIME="${SLIME_SETUP_TIME:-00:45:00}"; SCRIPT=scripts/deltaai/slime_setup.sbatch; JOB_ARGS=() ;;
+  slime-setup) TIME="${SLIME_SETUP_TIME:-02:30:00}"; SCRIPT=scripts/deltaai/slime_setup.sbatch; JOB_ARGS=() ;;
   train)       TIME="${TRAIN_TIME:-04:00:00}";       SCRIPT=scripts/deltaai/train_reinit.sbatch; JOB_ARGS=() ;;
   setup-train) TIME="${SETUP_TRAIN_TIME:-20:00:00}"; SCRIPT=scripts/deltaai/setup_and_train.sbatch; JOB_ARGS=() ;;
   eval-trained) TIME="${EVAL_TRAINED_TIME:-02:30:00}"; SCRIPT=scripts/deltaai/eval_trained.sbatch; JOB_ARGS=("${2:-best}") ;;
@@ -52,7 +52,7 @@ CMD=(sbatch --account="$DELTAAI_ACCOUNT" --partition="$DELTAAI_PARTITION" --time
 case "$KIND" in
   smoke) DESC="smoke test: 2 questions x 1 sample x 3 modes" ;;
   build-slime) DESC="build the slime training image (compiles on 64 CPUs; holds 1 GPU, the billing unit)" ;;
-  slime-setup) DESC="convert the model to Megatron format + round-trip weight check" ;;
+  slime-setup) DESC="convert the model to Megatron format + round-trip weight check + 2-step smoke training run" ;;
   train)       DESC="GRPO training (configs/train_reinit.toml: run name and number of steps)" ;;
   setup-train) DESC="setup (skipped if already passed), then GRPO training, in one job" ;;
   eval-trained) DESC="convert + check checkpoint '${JOB_ARGS[0]}', then the control evaluation (198 x 4 x 3 modes)" ;;

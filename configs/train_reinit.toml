@@ -235,3 +235,22 @@ eval_reserve_min = 135
 eval_after_training = true
 # Do not start training with less than this many minutes of budget (the setup alone takes ~30).
 min_train_min = 30
+
+[smoke]
+# The smoke run (scripts/deltaai/smoke_train.sh, user 2026-11-19): real slime training with THIS
+# config, changed only in the step count, the validation interval/size and the checkpoint
+# interval below, so every part of training runs once in the short setup job instead of failing
+# hours into the long one (job 3622008 lost a 10.5 h queue slot to a crash in minute 2). Its
+# checkpoints are deleted at the end; its logs stay in runs/smoke_train_<job>/.
+# Training steps | 2 | step 2 is generated with the weights after update 1, so it proves the
+# trainer -> SGLang weight push; also the step count at which the checkpoint is saved and
+# validated (src.train_args.smoke_config sets [eval] interval and [checkpoint] save_interval to it).
+steps = 2
+# Validation questions: the first N lines of the real validation file | 16 | a full pass is 300
+# answers of up to 32k tokens (tens of minutes); 16 exercises the same code.
+eval_questions = 16
+# Serving test of the converted step-2 checkpoint with the control image (SGLang 0.5.23 +
+# src/generate.py --checkpoint, as in the real evaluation): questions x 1 sample x 3 modes, with
+# a new-token cap | 1 question, 2,048 tokens | checks the path only, not quality.
+serve_questions = 1
+serve_max_new_tokens = 2048

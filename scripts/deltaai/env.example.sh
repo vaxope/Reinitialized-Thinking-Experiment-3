@@ -46,8 +46,9 @@ export FULL_TIME="06:00:00"
 # rest (steps 7-12, writing the ~20-30 GB image, hash, GPU check) adds roughly 30-50 min, so
 # 2.5 h is too tight: a time-out while the image file is written loses the whole build.
 export BUILD_SLIME_TIME="03:30:00"
-# One-time weight conversion + check: about 20-30 min.
-export SLIME_SETUP_TIME="00:45:00"
+# One-time setup: weight conversion + checks (~20-30 min), then the 2-step smoke run
+# (scripts/deltaai/smoke_train.sh, ~40-60 min); 2.5 h leaves margin (only time used is charged).
+export SLIME_SETUP_TIME="02:30:00"
 # Training: set from the pilot's measured step time (the 25-step pilot: about 2-3 h projected).
 export TRAIN_TIME="04:00:00"
 # Setup + training in one job (submit.sh setup-train). 100 steps at an estimated 6-10 min each
