@@ -99,6 +99,12 @@ def test_build_and_gpu_check_import_the_same_modules():
 def test_scripts_parse():
     py_compile.compile(str(REPO_ROOT / "scripts" / "deltaai" / "check_slime_gpu.py"), doraise=True)
     py_compile.compile(str(REPO_ROOT / "scripts" / "deltaai" / "check_slime_args.py"), doraise=True)
+    py_compile.compile(str(REPO_ROOT / "scripts" / "deltaai" / "convert_to_hf.py"), doraise=True)
+    # no script may call slime's reverse converter directly: it reads a common.pt that Megatron
+    # ae76c60e no longer writes (setup job 3631056); scripts/deltaai/convert_to_hf.py wraps it
+    for f in (REPO_ROOT / "scripts" / "deltaai").iterdir():
+        if f.suffix in (".sh", ".sbatch"):
+            assert "/opt/slime/tools/convert_torch_dist_to_hf.py" not in f.read_text(), f.name
     bash = shutil.which("bash")
     for name in ("build_slime.sbatch", "submit.sh", "slime_common.sh", "slime_setup.sbatch",
                  "train_reinit.sbatch", "train_inside.sh", "setup_and_train.sbatch",

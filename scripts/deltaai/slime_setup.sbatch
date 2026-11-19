@@ -10,7 +10,8 @@
 #      tools/convert_hf_to_torch_dist.py, using EXACTLY the architecture flags training uses
 #      (src/train_args.py --model-args, checked against the model's config.json). This copy is
 #      both the starting point of training and the frozen KL reference (--ref-load);
-#   3. convert it back to Hugging Face format (tools/convert_torch_dist_to_hf.py) and require every
+#   3. convert it back to Hugging Face format (scripts/deltaai/convert_to_hf.py = slime's
+#      tools/convert_torch_dist_to_hf.py, reading the checkpoint format Megatron ae76c60e writes) and require every
 #      language-model weight to match the original (src/check_roundtrip.py); then delete that
 #      temporary copy (it was created by this job and is not needed again);
 #   4. build the training flags once (src/train_args.py) and run them through slime's REAL parser
@@ -59,9 +60,14 @@ S env MASTER_ADDR=127.0.0.1 MASTER_PORT="$(free_port)" WORLD_SIZE=1 RANK=0 LOCAL
 echo "[setup] conversion done in $((SECONDS - T0)) s: $(du -sh "$REF_DIR" | cut -f1)"
 
 # ---- 3
-CKPT_SUBDIR="$(dirname "$(find "$REF_DIR" -name common.pt | head -n 1)")"
+# The checkpoint folder is the one with torch_dist's .metadata file (the converter saves it as
+# <REF_DIR>/release). Megatron ae76c60e writes no common.pt any more (setup job 3631056).
+mapfile -t META < <(find "$REF_DIR" -name .metadata)
+if [ "${#META[@]}" -ne 1 ]; then echo "[setup] expected one checkpoint (.metadata) in $REF_DIR, found ${#META[@]}"; exit 1; fi
+CKPT_SUBDIR="$(dirname "${META[0]}")"
+echo "[setup] Megatron checkpoint folder: $CKPT_SUBDIR"
 RT_DIR="$SLIME_CKPT_DIR/_roundtrip_check_${SLURM_JOB_ID:-local}"
-S python3 /opt/slime/tools/convert_torch_dist_to_hf.py --input-dir "$CKPT_SUBDIR" \
+S env PYTHONPATH=/opt/Megatron-LM:/opt/slime python3 scripts/deltaai/convert_to_hf.py --input-dir "$CKPT_SUBDIR" \
   --output-dir "$RT_DIR" --origin-hf-dir "$HF_SNAPSHOT" --vocab-size "$VOCAB_SIZE"
 set +e
 S python3 -m src.check_roundtrip "$HF_SNAPSHOT" "$RT_DIR"

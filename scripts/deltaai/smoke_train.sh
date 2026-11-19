@@ -70,7 +70,7 @@ S python3 -m src.check_smoke "$SMOKE_DIR/rollouts"
 eval "$(S python3 -m src.pick_checkpoint --smoke --rollouts "$SMOKE_DIR/rollouts" --ckpt-dir "$SAVE_DIR" --shell)"
 HF_OUT="$SAVE_DIR/hf_step$STEP"
 S env PYTHONPATH=/opt/Megatron-LM:/opt/slime \
-  python3 /opt/slime/tools/convert_torch_dist_to_hf.py --input-dir "$ITER_DIR" --output-dir "$HF_OUT" \
+  python3 scripts/deltaai/convert_to_hf.py --input-dir "$ITER_DIR" --output-dir "$HF_OUT" \
   --origin-hf-dir "$HF_SNAPSHOT" --add-missing-from-origin-hf --vocab-size "$VOCAB_SIZE"
 S python3 -m src.check_trained "$HF_SNAPSHOT" "$HF_OUT" \
   --source "{\"run\": \"$SMOKE_ID\", \"step\": $STEP, \"iter_dir\": \"$ITER_DIR\", \"job\": \"$JOB\"}"

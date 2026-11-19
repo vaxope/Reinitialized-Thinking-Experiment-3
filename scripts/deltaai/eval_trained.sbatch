@@ -7,7 +7,7 @@
 #   1. pick the checkpoint (src/pick_checkpoint.py): the saved step with the highest validation
 #      v3 accuracy on the held-out SuperGPQA slice (ties -> later), or the STEP given. GPQA is
 #      never used for this choice;
-#   2. convert it to Hugging Face format with slime's tools/convert_torch_dist_to_hf.py (the tool
+#   2. convert it to Hugging Face format with scripts/deltaai/convert_to_hf.py (slime's converter; the tool
 #      slime_setup.sbatch's round-trip check uses), copying the untouched vision/MTP weights and the
 #      tokenizer/config files from the pinned base snapshot; then src/check_trained.py: same tensors
 #      and files as the base, only language-model weights changed (at least one), and a
@@ -63,7 +63,7 @@ else
   mkdir -p "$(dirname "$EVAL_DIR")"
   T0=$SECONDS
   S env PYTHONPATH=/opt/Megatron-LM:/opt/slime \
-    python3 /opt/slime/tools/convert_torch_dist_to_hf.py --input-dir "$ITER_DIR" --output-dir "$PART" \
+    python3 scripts/deltaai/convert_to_hf.py --input-dir "$ITER_DIR" --output-dir "$PART" \
     --origin-hf-dir "$HF_SNAPSHOT" --add-missing-from-origin-hf --vocab-size "$VOCAB_SIZE"
   SOURCE="{\"run\": \"$RUN_NAME\", \"step\": $STEP, \"iter_dir\": \"$ITER_DIR\", \"job\": \"$JOB\", \"git\": \"$(git rev-parse HEAD)\"}"
   set +e
