@@ -18,6 +18,11 @@
 # ENABLE_RAY_CLUSTER off, so get_node_ip_address() returns get_localhost_ip() and everything stays
 # on 127.0.0.1 inside this one node (all a 1-GPU job needs). It must be set for `ray start` AND
 # train.py (the driver resolves RAY_ADDRESS=127.0.0.1:<port> the same way), hence exported here.
+# slime picks addresses with its own helper too (slime/utils/http_utils.get_host_info: a UDP probe
+# towards 8.8.8.8, i.e. the node's network address): the router and the SGLang engines. Smoke job
+# 3633409: the engine could not register with the router at 141.142.250.116:4320 (timed out).
+# get_host_info() returns $SLIME_HOST_IP when it is set (http_utils.SLIME_HOST_IP_ENV), so it is set
+# to 127.0.0.1 here. Every other slime address comes from Ray's get_node_ip_address() (loopback, above).
 # On failure, Ray's own logs (in the node's /tmp, wiped when the job ends) are copied next to the
 # rollout log: <run dir>/ray_logs_<pid>/.
 set -euo pipefail
@@ -30,6 +35,7 @@ mapfile -t FLAGS < "$FLAGS_FILE"
 export PYTHONPATH="$REPO_DIR:/opt/Megatron-LM${PYTHONPATH:+:$PYTHONPATH}"
 export CUDA_DEVICE_MAX_CONNECTIONS=1 NCCL_NVLS_ENABLE=0 PYTHONUNBUFFERED=1
 export RAY_ENABLE_WINDOWS_OR_OSX_CLUSTER=0   # keep Ray on 127.0.0.1 (see the header)
+export SLIME_HOST_IP=127.0.0.1                # keep slime's router and SGLang engines on 127.0.0.1
 : "${GAR_TRAIN_CONFIG:?}" "${GAR_ROLLOUT_LOG_DIR:?}"
 
 # Ray's own logs are in the node's /tmp, which is wiped when the job ends: on failure, keep the
