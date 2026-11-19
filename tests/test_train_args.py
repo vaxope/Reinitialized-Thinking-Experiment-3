@@ -13,7 +13,7 @@ from pathlib import Path
 from src.config import load_config
 from src.train_args import (FORBIDDEN_FLAGS, HF_CONFIG_KEYS, _flag_value, build_args, check_against_control,
                             check_flags, check_hf_config, check_plain_grpo, expected_resolved,
-                            load_train_config, model_args, smoke_config)
+                            load_train_config, model_args, smoke_config, PARSED_NAME)
 
 CFG = load_train_config()
 CONTROL = load_config()
@@ -71,6 +71,15 @@ def test_gradient_accumulation_fusion_off_in_conversion_and_training():
     assert expected_resolved(CFG)["gradient_accumulation_fusion"] is False
     on = copy.deepcopy(CFG); on["numerics"]["gradient_accumulation_fusion"] = True
     assert "--no-gradient-accumulation-fusion" not in model_args(on)
+
+
+def test_norm_epsilon_is_checked_under_megatrons_attribute_name():
+    """Setup job 3631176: Megatron ae76c60e stores --norm-epsilon as args.layernorm_epsilon, so the
+    check must expect that attribute (with the config's value), not a non-existent norm_epsilon."""
+    exp = expected_resolved(CFG)
+    assert "norm_epsilon" not in exp
+    assert exp["layernorm_epsilon"] == CFG["megatron_model"]["norm_epsilon"] == 1e-6
+    assert value(build_args(CFG, PATHS), "--norm-epsilon") == "1e-06"
 
 
 def test_smoke_config_changes_only_steps_and_intervals():
@@ -165,7 +174,8 @@ def test_expected_resolved_values_agree_with_the_flags():
     exp = expected_resolved(CFG)
     checked = 0
     for key, want in exp.items():
-        flag = "--" + key.replace("_", "-")
+        flag_key = {v: k for k, v in PARSED_NAME.items()}.get(key, key)   # attribute -> flag name
+        flag = "--" + flag_key.replace("_", "-")
         if isinstance(want, bool):
             # on/off flags appear only when on (std normalisation is on by slime's default)
             if flag in f:

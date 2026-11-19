@@ -289,6 +289,13 @@ def build_args(cfg: dict, paths: dict) -> list[str]:
     return a
 
 
+# Flags whose value Megatron stores under a different attribute name than the flag spells.
+# --norm-epsilon -> args.layernorm_epsilon: in Megatron ae76c60e the flag is generated from the
+# TransformerConfig field `layernorm_epsilon` (core/transformer/transformer_config.py, field
+# metadata arg_names ["--norm-epsilon"]); setup job 3631176's check found no `norm_epsilon`.
+PARSED_NAME = {"norm_epsilon": "layernorm_epsilon"}
+
+
 def smoke_config(cfg: dict) -> dict:
     """The config of the smoke run (scripts/deltaai/smoke_train.sh): the real one with ONLY the step
     count changed to [smoke] steps, and validation + checkpoint saving at that step, so the run
@@ -345,6 +352,8 @@ def expected_resolved(cfg: dict) -> dict:
                                    "attention_dropout", "hidden_dropout")})
     if not g["dynamic_sampling"]:
         exp["dynamic_sampling_filter_path"] = None
+    for flag_name, attr in PARSED_NAME.items():   # check the attribute Megatron really sets
+        exp[attr] = exp.pop(flag_name)
     return exp
 
 
